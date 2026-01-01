@@ -20,6 +20,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
+    "start": "SERVER_PORT=${PORT:-3000} elizaos start",
     "lint": "eslint . --fix",
     "format": "prettier --write \"src/**/*.ts\"",
     "test": "bun test"
