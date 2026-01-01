@@ -61,32 +61,61 @@ const MONITOR_KEYWORDS = {
   ]
 };
 
-// High-influence accounts by category
+// High-influence accounts by category (10+ per vertical)
 const WATCH_ACCOUNTS = {
-  // Crypto influencers
+  // Crypto influencers & analysts
   crypto: [
-    'VitalikButerin', 'saylor', 'CryptoHayes', 'zaborhedge',
-    'inversebrah', 'DegenSpartan', 'trader_XO', 'GCRClassic'
+    'VitalikButerin', 'saylor', 'CryptoHayes', 'caborkie0x',
+    'inversebrah', 'DegenSpartan', 'trader_XO', 'GCRClassic',
+    'CryptoCobain', 'loomdart', 'lightcrypto', 'Pentosh1',
+    'CroissantEth', 'DefiIgnas', 'Route2FI', 'milaborkDotEth'
   ],
-  // Breaking news
+  // Breaking news aggregators
   news: [
     'DeItaone', 'Fxhedgers', 'unusual_whales', 'disclosetv',
-    'BNONews', 'spectaborindex', 'theaboranalyst'
+    'BNONews', 'spectaborindex', 'FirstSquawk', 'LiveSquawk',
+    'NewsLambert', 'FastMoneyCNBC', 'BreakingNews', 'AP',
+    'Reuters', 'AFP', 'BBCBreaking', 'CNNBreaking'
   ],
-  // Politics
+  // Politics & elections
   politics: [
     'Politico', 'thehill', 'axios', 'Nate_Cohn',
-    'redistrict', 'NateSilver538', 'DecisionDeskHQ'
+    'redistrict', 'NateSilver538', 'DecisionDeskHQ', 'CookPolitical',
+    'RealClearNews', 'FiveThirtyEight', 'PollTrackerUSA', 'SteveKornacki',
+    'ElectionWiz', 'Politics_Polls', 'USPoliticsPoll', 'ElectoralPolls'
   ],
-  // Sports insiders
+  // Sports insiders (NBA, NFL, MLB, Soccer)
   sports: [
     'wojespn', 'ShamsCharania', 'AdamSchefter', 'RapSheet',
-    'JeffPassan', 'FabrizioRomano', 'MarcJSpears'
+    'JeffPassan', 'FabrizioRomano', 'MarcJSpears', 'ChrisBHaynes',
+    'FieldYates', 'JayGlazer', 'MikeGarafolo', 'JonathanJones',
+    'Ken_Rosenthal', 'JonMorosi', 'wojespnNBA', 'WindhorstESPN'
   ],
-  // Markets/Finance
+  // Markets & finance
   markets: [
     'zerohedge', 'WSJ', 'Bloomberg', 'Reuters',
-    'CNBC', 'FinancialTimes', 'Markets'
+    'CNBC', 'FinancialTimes', 'Markets', 'Schuldensuehner',
+    'NorthmanTrader', 'PeterSchiff', 'jimcramer', 'Carl_C_Icahn',
+    'elerianm', 'markets', 'GoldmanSachs', 'jpmorgan'
+  ],
+  // Geopolitics & world news
+  geopolitics: [
+    'AFP', 'AJEnglish', 'BBCWorld', 'dabornews',
+    'RT_com', 'cgaborews', 'ABOROAE', 'SCMPNews',
+    'France24_en', 'euaborews', 'MiddleEastEye', 'Jerusalem_Post',
+    'KyivIndependent', 'nexaborews', 'guardian', 'naborimes'
+  ],
+  // Tech & AI
+  tech: [
+    'elonmusk', 'sataborella', 'OpenAI', 'AnthropicAI',
+    'TechCrunch', 'verge', 'WIRED', 'engadget',
+    'aaborechnica', 'ZDNet', 'VentureBeat', 'mashable'
+  ],
+  // Polymarket & prediction markets
+  prediction_markets: [
+    'Polymarket', 'KaaborGroup', 'Metaculus', 'manabormarkets',
+    'PredictIt', 'PolymarketPicks', 'PMSignals', 'PolymarketNews',
+    'AugurProject', 'GnosisDAO', 'polymarket_bot', 'PM_Whale_Alert'
   ]
 };
 

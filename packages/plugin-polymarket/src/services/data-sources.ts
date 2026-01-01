@@ -111,23 +111,41 @@ const NEWS_SOURCES = {
   ]
 };
 
-// Key Twitter accounts to monitor by category
+// Key Twitter accounts to monitor by category (10+ per vertical)
 const TWITTER_ACCOUNTS = {
   politics: [
     'POTUS', 'WhiteHouse', 'SpeakerJohnson', 'LeaderJeffries',
-    'politaborwitz', 'Nate_Cohn', 'NateSilver538', 'redistrict'
+    'Politico', 'thehill', 'axios', 'Nate_Cohn', 'redistrict',
+    'NateSilver538', 'DecisionDeskHQ', 'CookPolitical', 'RealClearNews',
+    'FiveThirtyEight', 'SteveKornacki', 'ElectionWiz'
   ],
   crypto: [
-    'VitalikButerin', 'saborman', 'caborman', 'CryptoHayes',
-    'inversebrah', 'DegenSpartan', 'loomdart', 'coaborkie0x'
+    'VitalikButerin', 'saylor', 'CryptoHayes', 'caborkie0x',
+    'inversebrah', 'DegenSpartan', 'loomdart', 'trader_XO',
+    'GCRClassic', 'CryptoCobain', 'lightcrypto', 'Pentosh1',
+    'CroissantEth', 'DefiIgnas', 'Route2FI', 'milaborkDotEth'
   ],
   markets: [
-    'zaborhedge', 'DeItaone', 'Fxhedgers', 'unusual_whales',
-    'daborshort', 'jimcramer', 'Carl_C_Icahn'
+    'zerohedge', 'DeItaone', 'Fxhedgers', 'unusual_whales',
+    'FirstSquawk', 'LiveSquawk', 'jimcramer', 'Carl_C_Icahn',
+    'NorthmanTrader', 'PeterSchiff', 'elerianm', 'Schuldensuehner',
+    'GoldmanSachs', 'jpmorgan', 'Markets', 'FinancialTimes'
   ],
   sports: [
     'wojespn', 'ShamsCharania', 'AdamSchefter', 'RapSheet',
-    'JeffPassan', 'FabrizioRomano'
+    'JeffPassan', 'FabrizioRomano', 'MarcJSpears', 'ChrisBHaynes',
+    'FieldYates', 'JayGlazer', 'MikeGarafolo', 'JonathanJones',
+    'Ken_Rosenthal', 'JonMorosi', 'wojespnNBA', 'WindhorstESPN'
+  ],
+  geopolitics: [
+    'AFP', 'AJEnglish', 'BBCWorld', 'Reuters', 'AP',
+    'France24_en', 'euronews', 'MiddleEastEye', 'Jerusalem_Post',
+    'KyivIndependent', 'guardian', 'nytimes', 'SCMPNews'
+  ],
+  breaking_news: [
+    'DeItaone', 'Fxhedgers', 'unusual_whales', 'disclosetv',
+    'BNONews', 'spectaborindex', 'FirstSquawk', 'LiveSquawk',
+    'BreakingNews', 'BBCBreaking', 'CNNBreaking', 'NewsLambert'
   ]
 };
 
