@@ -43,7 +43,7 @@ import {
 } from './actions';
 
 // Providers
-import { portfolioProvider, marketsProvider } from './providers';
+import { portfolioProvider, marketsProvider, newsProvider } from './providers';
 
 // Evaluators
 import { tradingEvaluator } from './evaluators';
@@ -151,6 +151,7 @@ export const polymarketPlugin: Plugin = {
   providers: [
     portfolioProvider,
     marketsProvider,
+    newsProvider,
   ],
 
   // Evaluators for autonomous behavior

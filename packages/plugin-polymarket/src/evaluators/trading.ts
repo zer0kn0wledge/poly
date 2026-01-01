@@ -16,6 +16,7 @@ import type {
 import { ModelType, logger, ServiceType } from '@elizaos/core';
 import { PolymarketService } from '../services/polymarket';
 import type { PolymarketMarket } from '../types';
+import { newsProvider } from '../providers/news';
 
 // Type for IPostService (avoid direct import to keep plugin standalone)
 interface PostContent {
@@ -58,6 +59,7 @@ interface TradeDecision {
 }
 
 const analysisPrompt = `You are an expert prediction market trader analyzing Polymarket opportunities.
+You use fundamental analysis, news, and market data to find mispriced opportunities.
 
 Current Portfolio:
 {{portfolio}}
@@ -67,30 +69,34 @@ Risk Settings:
 - Max Portfolio Risk: ${{maxPortfolioRisk}}
 - Daily Loss Limit: ${{maxDailyLoss}}
 
+{{newsContext}}
+
 Active Markets to Analyze:
 {{markets}}
 
 Your task:
 1. Analyze each market for trading opportunities
-2. Look for mispriced markets where your estimate differs significantly from current odds
-3. Consider news, trends, and any edge you might have
-4. Be conservative - only recommend trades with high confidence
+2. Use the news context to inform your probability estimates
+3. Look for mispriced markets where your estimate differs significantly (>10%) from current odds
+4. Consider recent developments that the market may not have priced in yet
+5. Be conservative - only recommend trades with high confidence
 
 For each market, evaluate:
-- Is the current price accurate based on available information?
+- What does recent news tell us about the likely outcome?
+- Is the current price accurate based on all available information?
 - Is there a clear edge (>10% mispricing)?
 - What's the risk/reward ratio?
 
 Respond with JSON:
 {
   "shouldTrade": boolean,
-  "marketAnalysis": "Overall market conditions and reasoning",
+  "marketAnalysis": "Overall market conditions and key news insights",
   "opportunities": [
     {
       "marketQuestion": "The market question",
       "signal": "BUY_YES" | "BUY_NO" | "HOLD",
       "confidence": 0-100,
-      "reasoning": "Why this trade makes sense",
+      "reasoning": "Why this trade makes sense, citing specific news or data",
       "currentPrice": 0.XX,
       "targetPrice": 0.XX,
       "suggestedSize": dollar amount
@@ -106,7 +112,8 @@ Be selective - it's better to make no trade than a bad trade.`;
  */
 async function analyzeMarkets(
   runtime: IAgentRuntime,
-  service: PolymarketService
+  service: PolymarketService,
+  message: Memory
 ): Promise<TradeDecision> {
   try {
     // Fetch active markets
@@ -115,6 +122,15 @@ async function analyzeMarkets(
     // Get portfolio status
     const portfolio = await service.getPortfolio();
     const riskSettings = service.getRiskSettings();
+
+    // Get news context from news provider
+    let newsContext = '';
+    try {
+      newsContext = await newsProvider.get(runtime, message);
+    } catch (error) {
+      logger.debug({ error }, '[TradingEvaluator] Failed to get news context');
+      newsContext = '## News Context\nNo recent news available. Analyze based on market data only.';
+    }
 
     // Format markets for analysis
     const marketsText = markets.slice(0, 10).map((m, i) => {
@@ -139,6 +155,7 @@ Open Positions: ${portfolio.positions.length}`;
       .replace('{{maxPositionSize}}', riskSettings.maxPositionSize.toString())
       .replace('{{maxPortfolioRisk}}', riskSettings.maxPortfolioRisk.toString())
       .replace('{{maxDailyLoss}}', riskSettings.maxDailyLoss.toString())
+      .replace('{{newsContext}}', newsContext)
       .replace('{{markets}}', marketsText);
 
     // Get LLM analysis
@@ -292,8 +309,8 @@ async function handler(
 
   logger.info('[TradingEvaluator] Running autonomous market analysis...');
 
-  // Analyze markets
-  const decision = await analyzeMarkets(runtime, service);
+  // Analyze markets (with news context)
+  const decision = await analyzeMarkets(runtime, service, message);
 
   logger.info({
     shouldTrade: decision.shouldTrade,
