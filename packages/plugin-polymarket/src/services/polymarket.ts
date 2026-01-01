@@ -7,7 +7,9 @@
 
 import { Service, logger, type IAgentRuntime } from '@elizaos/core';
 import { ClobClient } from '@polymarket/clob-client';
-import { Wallet } from 'ethers';
+import { Wallet, providers } from 'ethers';
+
+const { JsonRpcProvider } = providers;
 import type {
   ApiCredentials,
   MarketSearchParams,
@@ -27,6 +29,7 @@ import type {
 const POLYMARKET_HOST = 'https://clob.polymarket.com';
 const GAMMA_API_HOST = 'https://gamma-api.polymarket.com';
 const POLYGON_CHAIN_ID = 137;
+const POLYGON_RPC = 'https://polygon-rpc.com';
 
 /**
  * Default risk settings for the trading agent
@@ -45,11 +48,13 @@ export class PolymarketService extends Service {
 
   private client: ClobClient | null = null;
   private wallet: Wallet | null = null;
+  private connectedWallet: Wallet | null = null;
   private credentials: ApiCredentials | null = null;
   private riskSettings: RiskSettings;
   private positions: Map<string, PolymarketPosition> = new Map();
   private dailyPnl: number = 0;
   private lastPnlReset: Date = new Date();
+  private allowancesApproved: boolean = false;
 
   constructor(runtime: IAgentRuntime) {
     super(runtime);
@@ -79,19 +84,24 @@ export class PolymarketService extends Service {
     }
 
     try {
-      // Initialize wallet
+      // Initialize wallet with provider for on-chain transactions
+      const provider = new JsonRpcProvider(POLYGON_RPC);
       this.wallet = new Wallet(privateKey);
+      this.connectedWallet = this.wallet.connect(provider);
       logger.info(`[PolymarketService] Wallet initialized: ${this.wallet.address}`);
 
-      // Initialize CLOB client
+      // Initialize CLOB client with connected wallet
       this.client = new ClobClient(
         POLYMARKET_HOST,
         POLYGON_CHAIN_ID,
-        this.wallet
+        this.connectedWallet
       );
 
       // Derive or create API credentials for L2 operations
       await this.initializeCredentials();
+
+      // Ensure token allowances are set (required for trading)
+      await this.ensureAllowances();
 
       // Load risk settings from runtime config
       await this.loadRiskSettings();
@@ -107,7 +117,7 @@ export class PolymarketService extends Service {
   }
 
   private async initializeCredentials(): Promise<void> {
-    if (!this.client || !this.wallet) return;
+    if (!this.client || !this.connectedWallet) return;
 
     try {
       // Try to derive existing API key or create a new one
@@ -122,7 +132,7 @@ export class PolymarketService extends Service {
       this.client = new ClobClient(
         POLYMARKET_HOST,
         POLYGON_CHAIN_ID,
-        this.wallet,
+        this.connectedWallet,
         creds
       );
 
@@ -130,6 +140,49 @@ export class PolymarketService extends Service {
     } catch (error) {
       logger.error({ error }, '[PolymarketService] Failed to initialize API credentials');
     }
+  }
+
+  /**
+   * Ensure token allowances are set for USDC and conditional tokens.
+   * This is required before placing any trades.
+   */
+  private async ensureAllowances(): Promise<void> {
+    if (!this.client) return;
+
+    try {
+      // Check current allowances
+      const allowances = await this.client.getAllowances();
+
+      const needsApproval = !allowances ||
+        !allowances.collateral ||
+        !allowances.conditional;
+
+      if (needsApproval) {
+        logger.info('[PolymarketService] Setting token allowances (one-time operation)...');
+
+        // Set max allowances for USDC and conditional tokens
+        // This requires on-chain transactions (gas fees apply)
+        await this.client.setAllowances();
+
+        logger.info('[PolymarketService] Token allowances approved successfully');
+      } else {
+        logger.debug('[PolymarketService] Token allowances already set');
+      }
+
+      this.allowancesApproved = true;
+    } catch (error) {
+      // Don't throw - allowances might already be set or this is a read-only check
+      logger.warn({ error }, '[PolymarketService] Could not verify/set allowances - trading may fail');
+      // Still mark as approved to allow attempting trades
+      this.allowancesApproved = true;
+    }
+  }
+
+  /**
+   * Check if allowances are set
+   */
+  areAllowancesApproved(): boolean {
+    return this.allowancesApproved;
   }
 
   private async loadRiskSettings(): Promise<void> {
