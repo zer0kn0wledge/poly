@@ -155,6 +155,12 @@ export class DataSourcesService extends Service {
   static override readonly serviceType = 'data-sources';
   override capabilityDescription = 'Aggregates multiple data APIs for market intelligence';
 
+  static async start(runtime: IAgentRuntime): Promise<DataSourcesService> {
+    const service = new DataSourcesService();
+    await service.initialize(runtime);
+    return service;
+  }
+
   private cryptoPanicKey: string;
   private coinGeckoKey: string;
   private defiLlamaKey: string;

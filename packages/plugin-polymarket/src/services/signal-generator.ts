@@ -48,6 +48,12 @@ export class SignalGeneratorService extends Service {
   static override readonly serviceType = 'signal-generator';
   override capabilityDescription = 'Generates trading signals from aggregated market data';
 
+  static async start(runtime: IAgentRuntime): Promise<SignalGeneratorService> {
+    const service = new SignalGeneratorService();
+    await service.initialize(runtime);
+    return service;
+  }
+
   private runtime: IAgentRuntime | null = null;
   private signalHistory: TradingSignal[] = [];
   private performanceHistory: SignalPerformance[] = [];

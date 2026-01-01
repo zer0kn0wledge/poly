@@ -123,6 +123,12 @@ export class TwitterMonitorService extends Service {
   static override readonly serviceType = 'twitter-monitor';
   override capabilityDescription = 'Monitors Twitter for prediction market signals';
 
+  static async start(runtime: IAgentRuntime): Promise<TwitterMonitorService> {
+    const service = new TwitterMonitorService();
+    await service.initialize(runtime);
+    return service;
+  }
+
   private bearerToken: string = '';
   private clientId: string = '';
   private clientSecret: string = '';

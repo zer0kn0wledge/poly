@@ -18,6 +18,12 @@ export class TwitterService extends Service {
   static override readonly serviceType = 'twitter';
   override capabilityDescription = 'Posts trade notifications to Twitter';
 
+  static async start(runtime: IAgentRuntime): Promise<TwitterService> {
+    const service = new TwitterService();
+    await service.initialize(runtime);
+    return service;
+  }
+
   private runtime: IAgentRuntime | null = null;
   private apiKey: string | null = null;
   private apiSecret: string | null = null;

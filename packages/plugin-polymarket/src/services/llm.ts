@@ -31,6 +31,12 @@ export class LLMService extends Service {
   static override readonly serviceType = 'llm';
   override capabilityDescription = 'Provides LLM capabilities via Anthropic API';
 
+  static async start(runtime: IAgentRuntime): Promise<LLMService> {
+    const service = new LLMService();
+    await service.initialize(runtime);
+    return service;
+  }
+
   private runtime: IAgentRuntime | null = null;
   private apiKey: string | null = null;
   private model = 'claude-sonnet-4-20250514';
