@@ -6,31 +6,16 @@ RUN apk add --no-cache python3 make g++ git
 
 WORKDIR /app
 
-# Copy entire monorepo structure for workspace dependencies
+# Copy entire monorepo - simpler than individual packages
 COPY package.json bun.lock* ./
-COPY packages/core/package.json ./packages/core/
-COPY packages/cli/package.json ./packages/cli/
-COPY packages/server/package.json ./packages/server/
-COPY packages/client/package.json ./packages/client/
-COPY packages/plugin-sql/package.json ./packages/plugin-sql/
-COPY packages/plugin-bootstrap/package.json ./packages/plugin-bootstrap/
-COPY packages/plugin-polymarket/package.json ./packages/plugin-polymarket/
+COPY packages ./packages
+COPY tsconfig*.json ./
+COPY turbo.json ./
 
 # Install dependencies
 RUN bun install --frozen-lockfile || bun install
 
-# Copy all source files
-COPY packages/core ./packages/core
-COPY packages/cli ./packages/cli
-COPY packages/server ./packages/server
-COPY packages/client ./packages/client
-COPY packages/plugin-sql ./packages/plugin-sql
-COPY packages/plugin-bootstrap ./packages/plugin-bootstrap
-COPY packages/plugin-polymarket ./packages/plugin-polymarket
-COPY tsconfig*.json ./
-COPY turbo.json ./
-
-# Build core packages first, then plugin
+# Build required packages in order
 RUN cd packages/core && bun run build || true
 RUN cd packages/plugin-sql && bun run build || true
 RUN cd packages/plugin-bootstrap && bun run build || true
