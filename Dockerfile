@@ -19,7 +19,7 @@ RUN npm install -g bun@1.2.21 turbo@2.3.3
 
 RUN ln -s /usr/bin/python3 /usr/bin/python
 
-COPY package.json turbo.json tsconfig.json lerna.json renovate.json .npmrc ./
+COPY package.json turbo.json tsconfig.json lerna.json renovate.json .npmrc build-utils.ts ./
 COPY scripts ./scripts
 COPY packages ./packages
 
