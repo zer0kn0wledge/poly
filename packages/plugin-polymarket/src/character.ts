@@ -12,29 +12,11 @@ import { type Character } from '@elizaos/core';
 export const character: Character = {
   name: 'PolyTrader',
   plugins: [
-    // Core plugins
+    // Core plugins only - LLM and Twitter are handled directly via SDKs
     '@elizaos/plugin-sql',
-
-    // LLM providers - use whatever is available
-    // Anthropic for primary if ANTHROPIC_API_KEY is set
-    ...(process.env.ANTHROPIC_API_KEY?.trim() ? ['@elizaos/plugin-anthropic'] : []),
-    // OpenAI fallback if OPENAI_API_KEY is set
-    ...(process.env.OPENAI_API_KEY?.trim() ? ['@elizaos/plugin-openai'] : []),
-    // Ollama as local fallback
-    ...(process.env.OLLAMA_API_ENDPOINT?.trim() ? ['@elizaos/plugin-ollama'] : []),
-
-    // Twitter integration for posting trade notifications (optional)
-    ...(process.env.TWITTER_API_KEY?.trim() &&
-    process.env.TWITTER_API_SECRET_KEY?.trim() &&
-    process.env.TWITTER_ACCESS_TOKEN?.trim() &&
-    process.env.TWITTER_ACCESS_TOKEN_SECRET?.trim()
-      ? ['@elizaos/plugin-twitter']
-      : []),
-
-    // Bootstrap plugin for core functionality
     '@elizaos/plugin-bootstrap',
-
     // Note: Polymarket plugin is loaded via project.ts, not here
+    // Note: We use @anthropic-ai/sdk and twitter-api-v2 directly for LLM and Twitter
   ],
   settings: {
     secrets: {},

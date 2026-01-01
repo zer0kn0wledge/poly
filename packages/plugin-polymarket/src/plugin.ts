@@ -35,6 +35,8 @@ import { PolymarketService } from './services/polymarket';
 import { DataSourcesService } from './services/data-sources';
 import { TwitterMonitorService } from './services/twitter-monitor';
 import { SignalGeneratorService } from './services/signal-generator';
+import { LLMService } from './services/llm';
+import { TwitterService } from './services/twitter';
 
 // Actions
 import {
@@ -144,6 +146,8 @@ export const polymarketPlugin: Plugin = {
     DataSourcesService,
     TwitterMonitorService,
     SignalGeneratorService,
+    LLMService,
+    TwitterService,
   ],
 
   // Actions for trading and market interaction

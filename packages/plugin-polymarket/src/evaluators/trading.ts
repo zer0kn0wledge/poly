@@ -22,6 +22,8 @@ import type {
 import { logger, ServiceType } from '@elizaos/core';
 import { PolymarketService } from '../services/polymarket';
 import { SignalGeneratorService, type TradingSignal } from '../services/signal-generator';
+import { LLMService } from '../services/llm';
+import { TwitterService } from '../services/twitter';
 import type { PolymarketMarket } from '../types';
 
 // Type for IPostService (avoid direct import to keep plugin standalone)
@@ -71,9 +73,9 @@ Current Portfolio:
 {{portfolio}}
 
 Risk Settings:
-- Max Position Size: ${{maxPositionSize}}
-- Max Portfolio Risk: ${{maxPortfolioRisk}}
-- Daily Loss Limit: ${{maxDailyLoss}}
+- Max Position Size: {{maxPositionSize}} USD
+- Max Portfolio Risk: {{maxPortfolioRisk}} USD
+- Daily Loss Limit: {{maxDailyLoss}} USD
 
 {{newsContext}}
 
@@ -164,39 +166,33 @@ Open Positions: ${portfolio.positions.length}`;
       .replace('{{newsContext}}', newsContext)
       .replace('{{markets}}', marketsText);
 
-    // Get LLM analysis
-    const response = await runtime.useModel(ModelType.OBJECT_LARGE, {
-      prompt,
-      schema: {
-        type: 'object',
-        properties: {
-          shouldTrade: { type: 'boolean' },
-          marketAnalysis: { type: 'string' },
-          opportunities: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                marketQuestion: { type: 'string' },
-                signal: { type: 'string' },
-                confidence: { type: 'number' },
-                reasoning: { type: 'string' },
-                currentPrice: { type: 'number' },
-                targetPrice: { type: 'number' },
-                suggestedSize: { type: 'number' },
-              },
-            },
-          },
-        },
-        required: ['shouldTrade', 'marketAnalysis', 'opportunities'],
-      },
-    });
+    // Get LLM service for analysis
+    const llmService = runtime.getService('llm') as LLMService | undefined;
+    if (!llmService || !llmService.isAvailable()) {
+      logger.warn('[TradingEvaluator] LLM service not available');
+      return { shouldTrade: false, opportunities: [], marketAnalysis: 'LLM not available' };
+    }
 
-    if (!response || typeof response !== 'object') {
+    // Get LLM analysis
+    const response = await llmService.generateJSON<{
+      shouldTrade: boolean;
+      marketAnalysis: string;
+      opportunities: Array<{
+        marketQuestion: string;
+        signal: string;
+        confidence: number;
+        reasoning: string;
+        currentPrice: number;
+        targetPrice: number;
+        suggestedSize: number;
+      }>;
+    }>(prompt);
+
+    if (!response || !response.data) {
       return { shouldTrade: false, opportunities: [], marketAnalysis: 'Analysis failed' };
     }
 
-    const analysis = response as any;
+    const analysis = response.data;
 
     // Map opportunities to markets
     const opportunities: MarketOpportunity[] = [];
@@ -228,7 +224,7 @@ Open Positions: ${portfolio.positions.length}`;
 }
 
 /**
- * Post trade notification to Twitter if PostService is available
+ * Post trade notification to Twitter if TwitterService is available
  */
 async function postTradeToTwitter(
   runtime: IAgentRuntime,
@@ -236,22 +232,29 @@ async function postTradeToTwitter(
   result: { success: boolean; message: string; orderId?: string }
 ): Promise<void> {
   try {
-    // Try to get the post service (Twitter, etc.)
-    const postService = runtime.getService(ServiceType.POST) as IPostServiceLike | undefined;
+    // Try to get our Twitter service
+    const twitterService = runtime.getService('twitter') as TwitterService | undefined;
 
-    if (!postService) {
-      logger.debug('[TradingEvaluator] No post service available, skipping Twitter notification');
+    if (!twitterService || !twitterService.isAvailable()) {
+      logger.debug('[TradingEvaluator] Twitter service not available, skipping notification');
       return;
     }
 
-    const tweetText = formatTradeForTwitter(opportunity, result);
+    const yesToken = opportunity.market.tokens.find(t => t.outcome.toLowerCase() === 'yes');
+    const price = opportunity.signal === 'BUY_YES' ? (yesToken?.price ?? 0.5) : (1 - (yesToken?.price ?? 0.5));
 
-    await postService.createPost(
-      { text: tweetText, tags: ['Polymarket', 'PredictionMarkets', 'Trading'] },
-      { visibility: 'public' }
-    );
+    const tweetResult = await twitterService.postTradeNotification({
+      market: opportunity.market.question,
+      direction: opportunity.signal as 'BUY_YES' | 'BUY_NO',
+      amount: opportunity.suggestedSize,
+      price,
+      confidence: opportunity.confidence,
+      reasoning: opportunity.reasoning,
+    });
 
-    logger.info('[TradingEvaluator] Trade notification posted to Twitter');
+    if (tweetResult) {
+      logger.info({ tweetId: tweetResult.id }, '[TradingEvaluator] Trade notification posted to Twitter');
+    }
   } catch (error) {
     logger.warn({ error }, '[TradingEvaluator] Failed to post trade notification to Twitter');
   }
