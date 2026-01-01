@@ -9,6 +9,8 @@
  * - Portfolio tracking and P&L reporting
  * - Risk management with configurable limits
  * - Real-time market data via Polymarket CLOB API
+ * - Autonomous trading with LLM-based market analysis
+ * - Twitter posting for trade notifications (via IPostService)
  *
  * Configuration:
  * - POLYMARKET_PRIVATE_KEY: Ethereum private key for trading (required for trading)
@@ -17,6 +19,11 @@
  * - POLYMARKET_MAX_DAILY_LOSS: Daily loss limit (default: 200)
  * - POLYMARKET_STOP_LOSS_PERCENT: Stop loss percentage (default: 20)
  * - POLYMARKET_TAKE_PROFIT_PERCENT: Take profit percentage (default: 50)
+ *
+ * Autonomous Trading Configuration:
+ * - POLYMARKET_AUTO_TRADE: Enable autonomous trading ("true" or "1")
+ * - POLYMARKET_ANALYSIS_INTERVAL: Market analysis interval in ms (default: 300000 / 5 min)
+ * - POLYMARKET_MIN_CONFIDENCE: Minimum confidence % for trades (default: 75)
  */
 
 import type { Plugin } from '@elizaos/core';
@@ -37,6 +44,9 @@ import {
 
 // Providers
 import { portfolioProvider, marketsProvider } from './providers';
+
+// Evaluators
+import { tradingEvaluator } from './evaluators';
 
 /**
  * Configuration schema for the Polymarket plugin
@@ -71,6 +81,19 @@ const configSchema = z.object({
     .string()
     .optional()
     .transform((val) => val ? parseFloat(val) : undefined),
+  // Autonomous trading settings
+  POLYMARKET_AUTO_TRADE: z
+    .string()
+    .optional()
+    .transform((val) => val === 'true' || val === '1'),
+  POLYMARKET_ANALYSIS_INTERVAL: z
+    .string()
+    .optional()
+    .transform((val) => val ? parseInt(val) : undefined),
+  POLYMARKET_MIN_CONFIDENCE: z
+    .string()
+    .optional()
+    .transform((val) => val ? parseInt(val) : undefined),
 });
 
 export const polymarketPlugin: Plugin = {
@@ -84,6 +107,9 @@ export const polymarketPlugin: Plugin = {
     POLYMARKET_MAX_DAILY_LOSS: process.env.POLYMARKET_MAX_DAILY_LOSS,
     POLYMARKET_STOP_LOSS_PERCENT: process.env.POLYMARKET_STOP_LOSS_PERCENT,
     POLYMARKET_TAKE_PROFIT_PERCENT: process.env.POLYMARKET_TAKE_PROFIT_PERCENT,
+    POLYMARKET_AUTO_TRADE: process.env.POLYMARKET_AUTO_TRADE,
+    POLYMARKET_ANALYSIS_INTERVAL: process.env.POLYMARKET_ANALYSIS_INTERVAL,
+    POLYMARKET_MIN_CONFIDENCE: process.env.POLYMARKET_MIN_CONFIDENCE,
   },
 
   async init(config: Record<string, string>) {
@@ -125,6 +151,11 @@ export const polymarketPlugin: Plugin = {
   providers: [
     portfolioProvider,
     marketsProvider,
+  ],
+
+  // Evaluators for autonomous behavior
+  evaluators: [
+    tradingEvaluator,
   ],
 
   // Event handlers
