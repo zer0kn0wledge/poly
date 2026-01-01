@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  entry: ['src/index.ts', 'src/plugin.ts'],
   format: ['esm'],
   dts: false, // Skip DTS due to tsconfig conflicts, types are available in source
   sourcemap: true,

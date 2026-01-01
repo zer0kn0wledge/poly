@@ -153,6 +153,7 @@ const TWITTER_ACCOUNTS = {
 
 export class DataSourcesService extends Service {
   static override readonly serviceType = 'data-sources';
+  override capabilityDescription = 'Aggregates multiple data APIs for market intelligence';
 
   private cryptoPanicKey: string;
   private coinGeckoKey: string;

@@ -11,19 +11,15 @@
  * - Autonomous trading with LLM-based market analysis
  * - Twitter posting for trade notifications
  *
- * @example
- * ```typescript
- * import { polymarketPlugin } from '@elizaos/plugin-polymarket';
- *
- * const agent = new Agent({
- *   plugins: [polymarketPlugin],
- * });
- * ```
- *
  * @example Running as standalone project
  * ```bash
  * cd packages/plugin-polymarket
  * elizaos start
+ * ```
+ *
+ * @example Using as a plugin
+ * ```typescript
+ * import { polymarketPlugin } from '@elizaos/plugin-polymarket/plugin';
  * ```
  */
 
@@ -35,8 +31,8 @@ import { character } from './character';
 const projectAgent: ProjectAgent = {
   character,
   init: async (runtime: IAgentRuntime) => {
-    logger.info('[PolyTrader] Initializing Polymarket trading agent');
-    logger.info({ name: character.name }, '[PolyTrader] Agent name:');
+    logger.info('[Zeracle] Initializing Polymarket trading agent');
+    logger.info({ name: character.name }, '[Zeracle] Agent name:');
   },
   plugins: [polymarketPlugin],
 };
@@ -46,11 +42,7 @@ const project: Project = {
   agents: [projectAgent],
 };
 
+// IMPORTANT: Only export project as default to avoid plugin detection
+// The CLI checks if ANY named export has 'name' and 'description' properties
+// If found, it treats the module as a plugin instead of a project
 export default project;
-export { polymarketPlugin } from './plugin';
-export { PolymarketService } from './services/polymarket';
-export { character } from './character';
-export * from './types';
-export * from './actions';
-export * from './providers';
-export * from './evaluators';

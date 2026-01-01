@@ -29,6 +29,7 @@ const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 
 export class LLMService extends Service {
   static override readonly serviceType = 'llm';
+  override capabilityDescription = 'Provides LLM capabilities via Anthropic API';
 
   private runtime: IAgentRuntime | null = null;
   private apiKey: string | null = null;

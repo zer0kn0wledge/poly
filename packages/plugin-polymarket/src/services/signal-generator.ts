@@ -46,6 +46,7 @@ export interface SignalPerformance {
 
 export class SignalGeneratorService extends Service {
   static override readonly serviceType = 'signal-generator';
+  override capabilityDescription = 'Generates trading signals from aggregated market data';
 
   private runtime: IAgentRuntime | null = null;
   private signalHistory: TradingSignal[] = [];

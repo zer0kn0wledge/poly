@@ -121,6 +121,7 @@ const WATCH_ACCOUNTS = {
 
 export class TwitterMonitorService extends Service {
   static override readonly serviceType = 'twitter-monitor';
+  override capabilityDescription = 'Monitors Twitter for prediction market signals';
 
   private bearerToken: string = '';
   private clientId: string = '';

@@ -16,6 +16,7 @@ export interface TweetResult {
 
 export class TwitterService extends Service {
   static override readonly serviceType = 'twitter';
+  override capabilityDescription = 'Posts trade notifications to Twitter';
 
   private runtime: IAgentRuntime | null = null;
   private apiKey: string | null = null;
