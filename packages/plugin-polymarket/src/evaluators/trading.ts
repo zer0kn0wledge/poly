@@ -2,7 +2,13 @@
  * Autonomous Trading Evaluator
  *
  * Periodically analyzes markets and decides whether to place trades.
- * Uses LLM reasoning to evaluate opportunities and manage positions.
+ * Uses SignalGeneratorService to aggregate all data sources:
+ * - CryptoPanic (crypto news)
+ * - CoinGecko + DeFiLlama (crypto prices/DeFi)
+ * - SportMonks (sports data)
+ * - Twitter monitoring (social signals)
+ * - News scraping (politics, economy, geopolitics)
+ *
  * Posts trade notifications to Twitter via IPostService.
  */
 
@@ -13,10 +19,10 @@ import type {
   State,
   Service,
 } from '@elizaos/core';
-import { ModelType, logger, ServiceType } from '@elizaos/core';
+import { logger, ServiceType } from '@elizaos/core';
 import { PolymarketService } from '../services/polymarket';
+import { SignalGeneratorService, type TradingSignal } from '../services/signal-generator';
 import type { PolymarketMarket } from '../types';
-import { newsProvider } from '../providers/news';
 
 // Type for IPostService (avoid direct import to keep plugin standalone)
 interface PostContent {
@@ -294,53 +300,104 @@ async function executeTrade(
 
 /**
  * Trading Evaluator Handler
+ *
+ * Uses SignalGeneratorService to aggregate all data sources and generate trading signals.
  */
 async function handler(
   runtime: IAgentRuntime,
   message: Memory,
   state?: State
 ): Promise<void> {
-  const service = runtime.getService<PolymarketService>('polymarket');
+  const polymarketService = runtime.getService<PolymarketService>('polymarket');
+  const signalGenerator = runtime.getService<SignalGeneratorService>('signal-generator');
 
-  if (!service || service.isReadOnly()) {
-    logger.debug('[TradingEvaluator] Service not available or read-only');
+  if (!polymarketService || polymarketService.isReadOnly()) {
+    logger.debug('[TradingEvaluator] Polymarket service not available or read-only');
     return;
   }
 
-  logger.info('[TradingEvaluator] Running autonomous market analysis...');
+  logger.info('[TradingEvaluator] Running autonomous market analysis with full data pipeline...');
 
-  // Analyze markets (with news context)
-  const decision = await analyzeMarkets(runtime, service, message);
+  // Use SignalGeneratorService if available, otherwise fall back to basic analysis
+  let signals: TradingSignal[] = [];
 
-  logger.info({
-    shouldTrade: decision.shouldTrade,
-    opportunityCount: decision.opportunities.length,
-    analysis: decision.marketAnalysis,
-  }, '[TradingEvaluator] Analysis complete');
-
-  if (!decision.shouldTrade || decision.opportunities.length === 0) {
-    logger.info('[TradingEvaluator] No trading opportunities found');
-    await runtime.setCache(LAST_ANALYSIS_KEY, Date.now().toString());
-    return;
+  if (signalGenerator) {
+    logger.info('[TradingEvaluator] Using SignalGenerator with all data sources');
+    signals = await signalGenerator.generateSignals();
+  } else {
+    logger.warn('[TradingEvaluator] SignalGenerator not available, using basic analysis');
+    // Fall back to basic analysis
+    const decision = await analyzeMarkets(runtime, polymarketService, message);
+    if (decision.shouldTrade) {
+      signals = decision.opportunities.map((opp) => ({
+        id: crypto.randomUUID(),
+        market: opp.market,
+        direction: opp.signal,
+        confidence: opp.confidence,
+        edge: 15, // Default edge estimate
+        reasoning: opp.reasoning,
+        supportingData: { news: [], tweets: [], priceSignals: [] },
+        timestamp: new Date(),
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+      }));
+    }
   }
 
   const config = getConfig();
 
-  // Execute trades for high-confidence opportunities
-  for (const opportunity of decision.opportunities) {
-    if (opportunity.confidence < config.minConfidence) continue;
+  logger.info({
+    signalCount: signals.length,
+    minConfidence: config.minConfidence,
+  }, '[TradingEvaluator] Analysis complete');
+
+  if (signals.length === 0) {
+    logger.info('[TradingEvaluator] No trading signals generated');
+    await runtime.setCache(LAST_ANALYSIS_KEY, Date.now().toString());
+    return;
+  }
+
+  // Filter and execute high-confidence signals
+  const tradableSignals = signals.filter((s) => s.confidence >= config.minConfidence);
+
+  for (const signal of tradableSignals) {
+    const riskSettings = polymarketService.getRiskSettings();
+    const suggestedSize = Math.min(
+      Math.abs(signal.edge) * 2, // Size based on edge
+      riskSettings.maxPositionSize
+    );
+
+    // Convert signal to opportunity format
+    const opportunity: MarketOpportunity = {
+      market: signal.market,
+      signal: signal.direction,
+      confidence: signal.confidence,
+      reasoning: signal.reasoning,
+      suggestedSize,
+    };
 
     logger.info({
-      market: opportunity.market.question,
-      signal: opportunity.signal,
-      confidence: opportunity.confidence,
-      size: opportunity.suggestedSize,
-    }, '[TradingEvaluator] Executing trade');
+      market: signal.market.question,
+      direction: signal.direction,
+      confidence: signal.confidence,
+      edge: signal.edge,
+      size: suggestedSize,
+      supportingData: {
+        newsCount: signal.supportingData.news.length,
+        tweetCount: signal.supportingData.tweets.length,
+        priceSignalCount: signal.supportingData.priceSignals.length,
+      },
+    }, '[TradingEvaluator] Executing trade based on signal');
 
-    const result = await executeTrade(service, opportunity);
+    const result = await executeTrade(polymarketService, opportunity);
 
     if (result.success) {
       logger.info({ orderId: result.orderId }, '[TradingEvaluator] Trade executed');
+
+      // Record signal entry for performance tracking
+      if (signalGenerator) {
+        const yesPrice = signal.market.tokens.find((t) => t.outcome.toLowerCase() === 'yes')?.price || 0.5;
+        signalGenerator.recordSignalEntry(signal, yesPrice);
+      }
 
       // Post trade notification to Twitter
       await postTradeToTwitter(runtime, opportunity, result);
@@ -355,11 +412,17 @@ async function handler(
           text: formatTradeForTwitter(opportunity, result),
           action: 'POLYMARKET_TRADE',
           metadata: {
-            market: opportunity.market.question,
-            signal: opportunity.signal,
-            confidence: opportunity.confidence,
-            reasoning: opportunity.reasoning,
+            market: signal.market.question,
+            signal: signal.direction,
+            confidence: signal.confidence,
+            edge: signal.edge,
+            reasoning: signal.reasoning,
             orderId: result.orderId,
+            supportingDataSummary: {
+              newsItems: signal.supportingData.news.length,
+              tweets: signal.supportingData.tweets.length,
+              priceSignals: signal.supportingData.priceSignals.length,
+            },
           },
         },
         createdAt: Date.now(),
@@ -372,12 +435,14 @@ async function handler(
       runtime.emit('POLYMARKET_TRADE_EXECUTED', {
         runtime,
         trade: {
-          market: opportunity.market.question,
-          signal: opportunity.signal,
-          confidence: opportunity.confidence,
-          reasoning: opportunity.reasoning,
+          market: signal.market.question,
+          signal: signal.direction,
+          confidence: signal.confidence,
+          edge: signal.edge,
+          reasoning: signal.reasoning,
           orderId: result.orderId,
           message: result.message,
+          supportingData: signal.supportingData,
         },
       });
     } else {

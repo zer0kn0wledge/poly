@@ -32,6 +32,9 @@ import { z } from 'zod';
 
 // Services
 import { PolymarketService } from './services/polymarket';
+import { DataSourcesService } from './services/data-sources';
+import { TwitterMonitorService } from './services/twitter-monitor';
+import { SignalGeneratorService } from './services/signal-generator';
 
 // Actions
 import {
@@ -136,7 +139,12 @@ export const polymarketPlugin: Plugin = {
   },
 
   // Services
-  services: [PolymarketService],
+  services: [
+    PolymarketService,
+    DataSourcesService,
+    TwitterMonitorService,
+    SignalGeneratorService,
+  ],
 
   // Actions for trading and market interaction
   actions: [
