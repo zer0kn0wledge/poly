@@ -3561,7 +3561,20 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<any> {
         updatedAt: now,
       };
 
-      await this.db.insert(messageTable).values(dbValues);
+      // Use UPSERT to handle duplicate key errors gracefully
+      // This fixes the issue where retries fail because the ID already exists
+      await this.db
+        .insert(messageTable)
+        .values(dbValues)
+        .onConflictDoUpdate({
+          target: messageTable.id,
+          set: {
+            content: data.content,
+            rawMessage: data.rawMessage,
+            metadata: data.metadata,
+            updatedAt: now,
+          },
+        });
 
       // Return with undefined instead of null for type compatibility
       return {
