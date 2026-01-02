@@ -266,6 +266,8 @@ export class PolymarketService extends Service {
 
   /**
    * Fetch markets from Polymarket
+   * @param params.includeResolution - If true, include markets in resolution phase (>95% skewed)
+   * @param params.skipDateFilter - If true, skip end_date_min filtering (for viewing past markets)
    */
   async getMarkets(params: MarketSearchParams = {}): Promise<PolymarketMarket[]> {
     try {
@@ -276,6 +278,20 @@ export class PolymarketService extends Service {
       queryParams.set('closed', String(params.closed ?? false));
       if (params.limit) queryParams.set('limit', String(params.limit));
       if (params.offset) queryParams.set('offset', String(params.offset));
+
+      // CRITICAL FIX: Add end_date_min filter to exclude past-dated markets
+      // This ensures we only get markets that haven't expired yet
+      const includeResolution = (params as any).includeResolution ?? false;
+      const skipDateFilter = (params as any).skipDateFilter ?? false;
+
+      if (!skipDateFilter) {
+        const currentDate = new Date().toISOString();
+        queryParams.set('end_date_min', currentDate);
+      }
+
+      // Request markets with active order books (tradeable)
+      queryParams.set('enableOrderBook', 'true');
+      queryParams.set('acceptingOrders', 'true');
 
       const response = await safeFetch(`${GAMMA_API_HOST}/markets?${queryParams.toString()}`);
       if (!response) {
@@ -292,17 +308,10 @@ export class PolymarketService extends Service {
       let markets = this.parseMarkets(data);
       logger.debug({ parsedCount: markets.length }, '[PolymarketService] Parsed markets');
 
-      // Get current year for date filtering
-      const etTime = getCurrentETTime();
-      const currentYear = etTime.year;
-
-      // Filter out markets that aren't tradeable
-      // TRUST the API's closed flag - if closed=false, it's tradeable
-      // Don't filter by end_date or year in question - market can be open after end date (awaiting resolution)
       const beforeFilter = markets.length;
 
       // Log raw market data for first few markets to debug
-      logger.info({
+      logger.debug({
         sampleMarkets: markets.slice(0, 3).map(m => ({
           question: m.question.slice(0, 60),
           closed: m.closed,
@@ -328,7 +337,7 @@ export class PolymarketService extends Service {
           return false;
         }
 
-        // Basic token validation - just check tokens exist for trading
+        // Basic token validation - check tokens exist for trading
         const hasTokens = m.tokens && m.tokens.length > 0 && m.tokens.some(t => t.token_id);
         if (!hasTokens) {
           logger.debug({ question: m.question.slice(0, 50) },
@@ -336,10 +345,31 @@ export class PolymarketService extends Service {
           return false;
         }
 
+        // CRITICAL FIX: Filter out markets with >95% skewed odds (effectively resolved)
+        // These markets are "awaiting resolution" - outcome is practically decided
+        if (!includeResolution) {
+          const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
+          const yesPrice = yesToken?.price ?? 0.5;
+
+          // If YES is >= 95% or <= 5%, market is effectively resolved
+          if (yesPrice >= 0.95 || yesPrice <= 0.05) {
+            logger.debug({
+              question: m.question.slice(0, 50),
+              yesPrice: (yesPrice * 100).toFixed(1) + '%'
+            }, '[PolymarketService] FILTERED: >95% skewed (awaiting resolution)');
+            return false;
+          }
+        }
+
         return true;
       });
 
-      logger.info({ beforeFilter, afterFilter: markets.length, currentYear }, '[PolymarketService] Markets after filtering');
+      logger.info({
+        beforeFilter,
+        afterFilter: markets.length,
+        includeResolution,
+        skipDateFilter
+      }, '[PolymarketService] Markets after filtering');
       return markets;
     } catch (error) {
       logger.error({ error }, '[PolymarketService] Failed to fetch markets');

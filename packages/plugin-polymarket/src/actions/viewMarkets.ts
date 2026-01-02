@@ -53,6 +53,11 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
 };
 
 /**
+ * Keywords that indicate user wants to see resolution markets (>95% skewed)
+ */
+const RESOLUTION_KEYWORDS = ['resolution', 'resolving', 'awaiting', 'decided', 'settled', 'concluded', 'ended', 'finished', 'outcome', 'result'];
+
+/**
  * Detect category from user text
  */
 function detectCategory(text: string): string | null {
@@ -65,6 +70,14 @@ function detectCategory(text: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Detect if user wants to see resolution markets (>95% skewed)
+ */
+function wantsResolutionMarkets(text: string): boolean {
+  const lowerText = text.toLowerCase();
+  return RESOLUTION_KEYWORDS.some(keyword => lowerText.includes(keyword));
 }
 
 /**
@@ -93,19 +106,63 @@ function formatTimeRemaining(endDateIso: string): string {
 }
 
 /**
- * Format a single market with detailed data
+ * Analyze market characteristics for insights
  */
-function formatMarketDetailed(m: PolymarketMarket, index: number): string {
+function analyzeMarket(m: PolymarketMarket): {
+  sentiment: string;
+  volatilityIndicator: string;
+  tradingOpportunity: string;
+} {
+  const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
+  const yesPrice = yesToken?.price ?? 0.5;
+  const volume = m.volume_num || 0;
+  const liquidity = m.liquidity || 0;
+  const spread = m.spread || 0;
+
+  // Sentiment based on odds
+  let sentiment = 'neutral';
+  if (yesPrice >= 0.7) sentiment = 'strongly bullish';
+  else if (yesPrice >= 0.55) sentiment = 'moderately bullish';
+  else if (yesPrice <= 0.3) sentiment = 'strongly bearish';
+  else if (yesPrice <= 0.45) sentiment = 'moderately bearish';
+
+  // Volatility based on volume/liquidity ratio and spread
+  let volatilityIndicator = 'moderate';
+  const volLiqRatio = volume / Math.max(liquidity, 1);
+  if (volLiqRatio > 20 || spread > 0.05) volatilityIndicator = 'high';
+  else if (volLiqRatio < 5 && spread < 0.02) volatilityIndicator = 'low';
+
+  // Trading opportunity assessment
+  let tradingOpportunity = 'standard';
+  if (spread < 0.02 && liquidity > 50000) tradingOpportunity = 'liquid - good for larger positions';
+  else if (spread > 0.08) tradingOpportunity = 'wide spread - use limit orders';
+  else if (yesPrice > 0.45 && yesPrice < 0.55) tradingOpportunity = 'contested - high conviction needed';
+
+  return { sentiment, volatilityIndicator, tradingOpportunity };
+}
+
+/**
+ * Format a single market with detailed analytical data
+ */
+function formatMarketDetailed(m: PolymarketMarket, index: number, includeAnalysis: boolean = true): string {
   const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
   const noToken = m.tokens.find(t => t.outcome.toLowerCase() === 'no');
   const yesPrice = yesToken?.price ?? 0.5;
   const noPrice = noToken?.price ?? 0.5;
-  const question = sanitizeText(m.question).slice(0, 80);
+  const question = sanitizeText(m.question).slice(0, 100);
   const volume = formatVolume(m.volume_num || 0);
   const liquidity = formatVolume(m.liquidity || 0);
   const timeLeft = formatTimeRemaining(m.end_date_iso);
+  const spread = ((m.spread || 0) * 100).toFixed(1);
 
-  return `${index}. ${question} | YES: ${(yesPrice * 100).toFixed(0)}% / NO: ${(noPrice * 100).toFixed(0)}% | Vol: ${volume} | Liq: ${liquidity} | Ends: ${timeLeft}`;
+  let base = `${index}. "${question}"\n   Odds: YES ${(yesPrice * 100).toFixed(0)}% / NO ${(noPrice * 100).toFixed(0)}% | Vol: ${volume} | Liq: ${liquidity} | Spread: ${spread}% | Ends: ${timeLeft}`;
+
+  if (includeAnalysis) {
+    const analysis = analyzeMarket(m);
+    base += `\n   Analysis: ${analysis.sentiment} sentiment, ${analysis.volatilityIndicator} volatility. ${analysis.tradingOpportunity}`;
+  }
+
+  return base;
 }
 
 export const viewMarketsAction: Action = {
@@ -160,6 +217,9 @@ export const viewMarketsAction: Action = {
       // Detect category from user text
       const detectedCategory = detectCategory(text);
 
+      // Check if user wants resolution markets (>95% skewed)
+      const includeResolution = wantsResolutionMarkets(text);
+
       // Extract specific query if quoted or after keywords
       let specificQuery = '';
       const quotedMatch = text.match(/"([^"]+)"/);
@@ -177,21 +237,27 @@ export const viewMarketsAction: Action = {
       const limitMatch = text.match(/(\d+)\s*(?:markets?|results?)/i);
       const limit = limitMatch ? Math.min(parseInt(limitMatch[1]), 10) : 5;
 
-      logger.info({ detectedCategory, specificQuery, limit }, '[ViewMarketsAction] Fetching markets');
+      logger.info({ detectedCategory, specificQuery, limit, includeResolution }, '[ViewMarketsAction] Fetching markets');
 
       // Fetch markets based on detected category or query
       let markets: PolymarketMarket[] = [];
       let searchContext = '';
 
+      // Build search params with resolution flag
+      const searchParams = { includeResolution };
+
       if (detectedCategory) {
         // Use category-based search for better filtering
+        // Note: getMarketsByCategory uses getMarkets internally, which now respects includeResolution
         markets = await service.getMarketsByCategory(detectedCategory, limit * 2);
         searchContext = `${detectedCategory.toUpperCase()} markets`;
-        logger.info({ category: detectedCategory, count: markets.length }, '[ViewMarketsAction] Category search');
+        if (includeResolution) searchContext += ' (including resolution phase)';
+        logger.info({ category: detectedCategory, count: markets.length, includeResolution }, '[ViewMarketsAction] Category search');
       } else if (specificQuery) {
         // Use specific query search
         markets = await service.searchMarkets(specificQuery, limit * 2);
         searchContext = `markets for "${sanitizeText(specificQuery)}"`;
+        if (includeResolution) searchContext += ' (including resolution phase)';
       } else {
         // Get trending/high-volume markets
         markets = await service.getTrendingMarkets({ limit: limit * 2, minVolume: 5000 });
@@ -215,16 +281,30 @@ export const viewMarketsAction: Action = {
         return { success: true, text: noResultsMsg, data: { markets: [] } };
       }
 
-      // Format markets with detailed data
-      const formattedMarkets = markets.map((m, i) => formatMarketDetailed(m, i + 1));
+      // Format markets with detailed analytical data
+      const formattedMarkets = markets.map((m, i) => formatMarketDetailed(m, i + 1, true));
 
       // Calculate aggregate stats
       const totalVolume = markets.reduce((sum, m) => sum + (m.volume_num || 0), 0);
       const avgLiquidity = markets.reduce((sum, m) => sum + (m.liquidity || 0), 0) / markets.length;
+      const avgSpread = markets.reduce((sum, m) => sum + (m.spread || 0), 0) / markets.length;
 
-      // Build comprehensive response
-      const header = `Top ${searchContext} (${markets.length} results, total vol: ${formatVolume(totalVolume)}):`;
-      const responseText = `${header} ${formattedMarkets.join(' | ')}`;
+      // Aggregate sentiment analysis
+      const sentimentCounts = { bullish: 0, bearish: 0, neutral: 0 };
+      for (const m of markets) {
+        const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
+        const yesPrice = yesToken?.price ?? 0.5;
+        if (yesPrice >= 0.55) sentimentCounts.bullish++;
+        else if (yesPrice <= 0.45) sentimentCounts.bearish++;
+        else sentimentCounts.neutral++;
+      }
+
+      // Build comprehensive response with market overview
+      const header = `MARKET ANALYSIS: ${searchContext}\n` +
+        `Found ${markets.length} markets | Total Volume: ${formatVolume(totalVolume)} | Avg Liquidity: ${formatVolume(avgLiquidity)} | Avg Spread: ${(avgSpread * 100).toFixed(2)}%\n` +
+        `Market Sentiment: ${sentimentCounts.bullish} bullish, ${sentimentCounts.bearish} bearish, ${sentimentCounts.neutral} neutral\n\n`;
+
+      const responseText = header + formattedMarkets.join('\n\n');
 
       logger.info({
         category: detectedCategory,
@@ -289,7 +369,7 @@ export const viewMarketsAction: Action = {
       {
         name: '{{agentName}}',
         content: {
-          text: 'Top CRYPTO markets (5 results, total vol: $12.5M): 1. Will Bitcoin reach $100k in 2025? | YES: 65% / NO: 35% | Vol: $5.2M | Liq: $850K | Ends: 12d | 2. ETH above $5k by year end? | YES: 42% / NO: 58% | Vol: $3.1M | Liq: $420K | Ends: 25d',
+          text: 'MARKET ANALYSIS: CRYPTO markets\nFound 5 markets | Total Volume: $12.5M | Avg Liquidity: $650K | Avg Spread: 1.25%\nMarket Sentiment: 3 bullish, 1 bearish, 1 neutral\n\n1. "Will Bitcoin reach $100k in 2025?"\n   Odds: YES 65% / NO 35% | Vol: $5.2M | Liq: $850K | Spread: 0.8% | Ends: 12d\n   Analysis: moderately bullish sentiment, low volatility. liquid - good for larger positions',
           action: 'VIEW_MARKETS',
         },
       },
@@ -304,7 +384,22 @@ export const viewMarketsAction: Action = {
       {
         name: '{{agentName}}',
         content: {
-          text: 'Top SPORTS markets (5 results, total vol: $8.7M): 1. Super Bowl 2025 winner? | YES: 28% / NO: 72% | Vol: $4.5M | Liq: $1.2M | Ends: 35d | 2. NBA Finals champion? | YES: 45% / NO: 55% | Vol: $2.1M | Liq: $380K | Ends: 180d',
+          text: 'MARKET ANALYSIS: SPORTS markets\nFound 5 markets | Total Volume: $8.7M | Avg Liquidity: $780K | Avg Spread: 1.8%\nMarket Sentiment: 2 bullish, 2 bearish, 1 neutral\n\n1. "Super Bowl 2025 winner - Chiefs?"\n   Odds: YES 28% / NO 72% | Vol: $4.5M | Liq: $1.2M | Spread: 1.2% | Ends: 35d\n   Analysis: moderately bearish sentiment, moderate volatility. liquid - good for larger positions',
+          action: 'VIEW_MARKETS',
+        },
+      },
+    ],
+    [
+      {
+        name: '{{userName}}',
+        content: {
+          text: 'Show me markets in resolution phase',
+        },
+      },
+      {
+        name: '{{agentName}}',
+        content: {
+          text: 'MARKET ANALYSIS: trending markets (including resolution phase)\nFound 3 markets | Total Volume: $2.1M | Avg Liquidity: $150K | Avg Spread: 3.5%\nMarket Sentiment: 2 bullish, 1 bearish, 0 neutral\n\n1. "Will Event X happen by Dec 31?"\n   Odds: YES 98% / NO 2% | Vol: $1.2M | Liq: $80K | Spread: 4.2% | Ends: awaiting resolution\n   Analysis: strongly bullish sentiment, high volatility. wide spread - use limit orders',
           action: 'VIEW_MARKETS',
         },
       },

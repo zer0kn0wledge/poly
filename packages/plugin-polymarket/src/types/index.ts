@@ -151,6 +151,10 @@ export interface MarketSearchParams {
   closed?: boolean;
   limit?: number;
   offset?: number;
+  /** If true, include markets in resolution phase (>95% skewed odds) */
+  includeResolution?: boolean;
+  /** If true, skip end_date_min filtering to view past markets */
+  skipDateFilter?: boolean;
 }
 
 /**
