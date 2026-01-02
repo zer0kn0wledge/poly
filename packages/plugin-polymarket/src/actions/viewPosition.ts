@@ -73,10 +73,10 @@ export const viewPositionAction: Action = {
       const positions = portfolio.positions;
 
       if (positions.length === 0) {
-        const noPositionsMsg = `**Portfolio Summary:**
-- Cash Balance: $${portfolio.cashBalance.toFixed(2)}
-- Total Value: $${portfolio.totalValue.toFixed(2)}
-- Positions: None
+        const noPositionsMsg = `Portfolio Summary:
+Cash Balance: $${portfolio.cashBalance.toFixed(2)}
+Total Value: $${portfolio.totalValue.toFixed(2)}
+Positions: None
 
 You don't have any open positions. Use the search command to find markets to trade.`;
 
@@ -91,30 +91,27 @@ You don't have any open positions. Use the search command to find markets to tra
         };
       }
 
-      // Format positions
+      // Format positions - no emojis (can cause DB encoding issues)
       const positionsList = positions.map((p, i) => {
         const pnlSign = p.unrealizedPnl >= 0 ? '+' : '';
-        const pnlColor = p.unrealizedPnl >= 0 ? '🟢' : '🔴';
 
-        return `${i + 1}. **${p.market.question}**
-   - Outcome: ${p.outcome}
-   - Shares: ${p.size.toFixed(2)}
-   - Avg Price: $${p.avgPrice.toFixed(4)}
-   - Current: $${p.currentPrice.toFixed(4)}
-   - ${pnlColor} P&L: ${pnlSign}$${p.unrealizedPnl.toFixed(2)} (${pnlSign}${p.unrealizedPnlPercent.toFixed(1)}%)`;
+        return `${i + 1}. ${p.market.question}
+   Outcome: ${p.outcome}
+   Shares: ${p.size.toFixed(2)} @ $${p.avgPrice.toFixed(4)} avg
+   Current: $${p.currentPrice.toFixed(4)}
+   P&L: ${pnlSign}$${p.unrealizedPnl.toFixed(2)} (${pnlSign}${p.unrealizedPnlPercent.toFixed(1)}%)`;
       }).join('\n\n');
 
       const totalPnlSign = portfolio.unrealizedPnl >= 0 ? '+' : '';
-      const totalPnlColor = portfolio.unrealizedPnl >= 0 ? '🟢' : '🔴';
 
-      const responseText = `**Portfolio Summary:**
-- Cash Balance: $${portfolio.cashBalance.toFixed(2)}
-- Position Value: $${(portfolio.totalValue - portfolio.cashBalance).toFixed(2)}
-- Total Value: $${portfolio.totalValue.toFixed(2)}
-- ${totalPnlColor} Unrealized P&L: ${totalPnlSign}$${portfolio.unrealizedPnl.toFixed(2)}
-- Realized P&L (today): ${portfolio.realizedPnl >= 0 ? '+' : ''}$${portfolio.realizedPnl.toFixed(2)}
+      const responseText = `Portfolio Summary:
+Cash Balance: $${portfolio.cashBalance.toFixed(2)}
+Position Value: $${(portfolio.totalValue - portfolio.cashBalance).toFixed(2)}
+Total Value: $${portfolio.totalValue.toFixed(2)}
+Unrealized P&L: ${totalPnlSign}$${portfolio.unrealizedPnl.toFixed(2)}
+Realized P&L (today): ${portfolio.realizedPnl >= 0 ? '+' : ''}$${portfolio.realizedPnl.toFixed(2)}
 
-**Open Positions (${positions.length}):**
+Open Positions (${positions.length}):
 
 ${positionsList}`;
 
@@ -156,7 +153,7 @@ ${positionsList}`;
       {
         name: '{{agentName}}',
         content: {
-          text: '**Portfolio Summary:**\n- Cash Balance: $500.00\n- Total Value: $1,234.56\n- 🟢 Unrealized P&L: +$123.45\n\n**Open Positions (2):**\n\n1. **Will Bitcoin reach $100k?**\n   - Outcome: Yes\n   - Shares: 100.00\n   - P&L: +$50.00',
+          text: 'Portfolio Summary:\nCash Balance: $500.00\nTotal Value: $1,234.56\nUnrealized P&L: +$123.45\n\nOpen Positions (2):\n\n1. Will Bitcoin reach $100k?\n   Outcome: Yes\n   Shares: 100.00\n   P&L: +$50.00',
           action: 'VIEW_POSITIONS',
         },
       },

@@ -130,7 +130,7 @@ export const marketDetailsAction: Action = {
         })
       );
 
-      // Format response
+      // Format response - no emojis (can cause DB encoding issues)
       const yesToken = tokenDetails.find(t => t.outcome.toLowerCase() === 'yes');
       const noToken = tokenDetails.find(t => t.outcome.toLowerCase() === 'no');
 
@@ -138,24 +138,27 @@ export const marketDetailsAction: Action = {
       const now = new Date();
       const daysRemaining = Math.ceil((endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
-      let responseText = `**${market.question}**
+      const statusText = market.active ? 'Active' : market.closed ? 'Closed' : 'Pending';
+      const ordersText = market.accepting_orders ? 'Yes' : 'No';
 
-📊 **Current Odds:**
+      let responseText = `${market.question}
+
+Current Odds:
 - Yes: ${((yesToken?.price ?? 0.5) * 100).toFixed(1)}%${yesToken?.orderBook ? ` (spread: ${(yesToken.orderBook.spread * 100).toFixed(2)}%)` : ''}
 - No: ${((noToken?.price ?? 0.5) * 100).toFixed(1)}%${noToken?.orderBook ? ` (spread: ${(noToken.orderBook.spread * 100).toFixed(2)}%)` : ''}
 
-📈 **Market Stats:**
+Market Stats:
 - Volume: $${market.volume_num.toLocaleString()}
 - Liquidity: $${market.liquidity.toLocaleString()}
-- Status: ${market.active ? '🟢 Active' : market.closed ? '🔴 Closed' : '⚪ Pending'}
-- ${market.accepting_orders ? '✅ Accepting Orders' : '❌ Not Accepting Orders'}
+- Status: ${statusText}
+- Accepting Orders: ${ordersText}
 
-📅 **Timeline:**
+Timeline:
 - End Date: ${endDate.toLocaleDateString()}
 - Days Remaining: ${daysRemaining > 0 ? daysRemaining : 'Ended'}`;
 
       if (market.description) {
-        responseText += `\n\n📝 **Description:**\n${market.description.slice(0, 500)}${market.description.length > 500 ? '...' : ''}`;
+        responseText += `\n\nDescription:\n${market.description.slice(0, 500)}${market.description.length > 500 ? '...' : ''}`;
       }
 
       if (callback) {
@@ -199,7 +202,7 @@ export const marketDetailsAction: Action = {
       {
         name: '{{agentName}}',
         content: {
-          text: '**Will a Bitcoin ETF be approved in 2024?**\n\n📊 **Current Odds:**\n- Yes: 72.5%\n- No: 27.5%\n\n📈 **Market Stats:**\n- Volume: $2,345,678\n- Liquidity: $123,456',
+          text: 'Will a Bitcoin ETF be approved in 2024?\n\nCurrent Odds:\n- Yes: 72.5%\n- No: 27.5%\n\nMarket Stats:\n- Volume: $2,345,678\n- Liquidity: $123,456',
           action: 'MARKET_DETAILS',
         },
       },

@@ -113,20 +113,19 @@ export const viewMarketsAction: Action = {
         return { success: true, text: noResultsMsg, data: { markets: [] } };
       }
 
-      // Format market list
-      const marketList = markets.map((m, i) => {
+      // Format market list - keep it simple, no emojis (can cause DB encoding issues)
+      const marketList = markets.slice(0, 5).map((m, i) => {
         const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
         const noToken = m.tokens.find(t => t.outcome.toLowerCase() === 'no');
         const yesPrice = yesToken?.price ?? 0.5;
         const noPrice = noToken?.price ?? 0.5;
 
-        return `${i + 1}. **${m.question}**
-   - Yes: ${(yesPrice * 100).toFixed(1)}% | No: ${(noPrice * 100).toFixed(1)}%
-   - Volume: $${m.volume_num.toLocaleString()}
-   - ${m.active ? '🟢 Active' : '🔴 Closed'}`;
+        return `${i + 1}. ${m.question}
+   Yes: ${(yesPrice * 100).toFixed(1)}% | No: ${(noPrice * 100).toFixed(1)}%
+   Volume: $${Math.round(m.volume_num).toLocaleString()}`;
       }).join('\n\n');
 
-      const responseText = `**Prediction Markets${query ? ` for "${query}"` : ''}:**\n\n${marketList}`;
+      const responseText = `Markets${query ? ` matching "${query}"` : ''}:\n\n${marketList}`;
 
       if (callback) {
         await callback({
@@ -174,7 +173,7 @@ export const viewMarketsAction: Action = {
       {
         name: '{{agentName}}',
         content: {
-          text: '**Prediction Markets for "crypto":**\n\n1. **Will Bitcoin reach $100k in 2025?**\n   - Yes: 65.2% | No: 34.8%\n   - Volume: $1,234,567\n   - 🟢 Active',
+          text: 'Markets matching "crypto":\n\n1. Will Bitcoin reach $100k in 2025?\n   Yes: 65.2% | No: 34.8%\n   Volume: $1,234,567',
           action: 'VIEW_MARKETS',
         },
       },
@@ -189,7 +188,7 @@ export const viewMarketsAction: Action = {
       {
         name: '{{agentName}}',
         content: {
-          text: '**Prediction Markets for "political":**\n\n1. **Who will win the 2024 election?**\n   - Yes: 52.1% | No: 47.9%\n   - Volume: $5,678,901',
+          text: 'Markets matching "political":\n\n1. Who will win the 2024 election?\n   Yes: 52.1% | No: 47.9%\n   Volume: $5,678,901',
           action: 'VIEW_MARKETS',
         },
       },
