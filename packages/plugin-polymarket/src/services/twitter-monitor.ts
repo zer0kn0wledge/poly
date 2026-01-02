@@ -230,7 +230,7 @@ export class TwitterMonitorService extends Service {
     try {
       const params = new URLSearchParams({
         query: `${query} -is:retweet lang:en`,
-        max_results: Math.min(maxResults, 100).toString(),
+        max_results: Math.max(10, Math.min(maxResults, 100)).toString(),
         'tweet.fields': 'created_at,public_metrics,author_id',
         'user.fields': 'username,name,public_metrics',
         expansions: 'author_id',
@@ -295,9 +295,9 @@ export class TwitterMonitorService extends Service {
       const userId = userData.data.id;
       const userInfo = userData.data;
 
-      // Get tweets
+      // Get tweets (Twitter API requires max_results between 10-100)
       const params = new URLSearchParams({
-        max_results: Math.min(maxResults, 100).toString(),
+        max_results: Math.max(10, Math.min(maxResults, 100)).toString(),
         'tweet.fields': 'created_at,public_metrics',
         exclude: 'retweets,replies',
       });
