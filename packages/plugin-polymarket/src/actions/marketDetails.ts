@@ -59,6 +59,118 @@ function extractKeywords(text: string): string[] {
     .filter((word, index, self) => self.indexOf(word) === index);
 }
 
+/**
+ * Format volume for display
+ */
+function formatVolume(volume: number): string {
+  if (volume >= 1000000) return `$${(volume / 1000000).toFixed(1)}M`;
+  if (volume >= 1000) return `$${(volume / 1000).toFixed(0)}K`;
+  return `$${volume.toFixed(0)}`;
+}
+
+/**
+ * Analyze order book for trading insights
+ */
+function analyzeOrderBook(orderBook: { bids: Array<{ price: number; size: number }>; asks: Array<{ price: number; size: number }>; spread: number; midpoint: number } | null): {
+  depth: string;
+  bidPressure: string;
+  liquidity: string;
+  recommendation: string;
+} {
+  if (!orderBook || !orderBook.bids || !orderBook.asks) {
+    return {
+      depth: 'Unknown',
+      bidPressure: 'Unknown',
+      liquidity: 'Low',
+      recommendation: 'Use limit orders due to unknown liquidity',
+    };
+  }
+
+  const totalBidSize = orderBook.bids.slice(0, 5).reduce((sum, b) => sum + b.size, 0);
+  const totalAskSize = orderBook.asks.slice(0, 5).reduce((sum, a) => sum + a.size, 0);
+  const totalDepth = totalBidSize + totalAskSize;
+
+  // Depth assessment
+  let depth = 'Shallow';
+  if (totalDepth > 10000) depth = 'Deep';
+  else if (totalDepth > 1000) depth = 'Moderate';
+
+  // Bid/ask pressure
+  let bidPressure = 'Balanced';
+  const ratio = totalBidSize / (totalAskSize || 1);
+  if (ratio > 1.5) bidPressure = 'Strong buying pressure';
+  else if (ratio < 0.67) bidPressure = 'Strong selling pressure';
+
+  // Liquidity assessment
+  let liquidity = 'Low';
+  if (orderBook.spread < 0.02 && totalDepth > 5000) liquidity = 'High';
+  else if (orderBook.spread < 0.05 && totalDepth > 1000) liquidity = 'Moderate';
+
+  // Trading recommendation
+  let recommendation = '';
+  if (liquidity === 'High') {
+    recommendation = 'Market orders viable for positions up to $500';
+  } else if (liquidity === 'Moderate') {
+    recommendation = 'Use limit orders, expect partial fills on larger positions';
+  } else {
+    recommendation = 'Only limit orders recommended, expect slippage on market orders';
+  }
+
+  return { depth, bidPressure, liquidity, recommendation };
+}
+
+/**
+ * Calculate risk-reward profile
+ */
+function calculateRiskReward(yesPrice: number, daysRemaining: number): {
+  potentialReturn: string;
+  riskLevel: string;
+  timeValue: string;
+  verdict: string;
+} {
+  // Potential return if YES wins
+  const yesReturn = ((1 / yesPrice) - 1) * 100;
+  // Potential return if NO wins (buying NO)
+  const noReturn = ((1 / (1 - yesPrice)) - 1) * 100;
+
+  const potentialReturn = `YES pays ${yesReturn.toFixed(0)}% | NO pays ${noReturn.toFixed(0)}%`;
+
+  // Risk level based on probability extremes
+  let riskLevel = 'Moderate';
+  if (yesPrice >= 0.85 || yesPrice <= 0.15) {
+    riskLevel = 'High (extreme odds)';
+  } else if (yesPrice >= 0.65 || yesPrice <= 0.35) {
+    riskLevel = 'Moderate-High';
+  } else if (yesPrice > 0.45 && yesPrice < 0.55) {
+    riskLevel = 'High (toss-up)';
+  }
+
+  // Time value assessment
+  let timeValue = 'Low';
+  if (daysRemaining > 90) timeValue = 'High (long duration)';
+  else if (daysRemaining > 30) timeValue = 'Moderate';
+  else if (daysRemaining > 7) timeValue = 'Low (approaching resolution)';
+  else timeValue = 'Minimal (imminent resolution)';
+
+  // Overall verdict
+  let verdict = '';
+  if (yesPrice > 0.45 && yesPrice < 0.55 && daysRemaining > 30) {
+    verdict = 'Contested market with time - wait for catalyst or edge before entry';
+  } else if (yesPrice >= 0.75 && daysRemaining < 14) {
+    verdict = 'Strong favorite near resolution - limited upside, fade if contrarian thesis';
+  } else if (yesPrice <= 0.25 && daysRemaining < 14) {
+    verdict = 'Heavy underdog near resolution - small position if thesis supports';
+  } else if (yesPrice >= 0.60 && yesPrice <= 0.75) {
+    verdict = 'Leaning YES - solid entry if thesis aligns with probability';
+  } else if (yesPrice >= 0.25 && yesPrice <= 0.40) {
+    verdict = 'Leaning NO - solid entry if thesis aligns with probability';
+  } else {
+    verdict = 'Evaluate news and catalysts before taking position';
+  }
+
+  return { potentialReturn, riskLevel, timeValue, verdict };
+}
+
 export const marketDetailsAction: Action = {
   name: 'MARKET_DETAILS',
   similes: [
@@ -201,6 +313,8 @@ export const marketDetailsAction: Action = {
       // Format response - no emojis (can cause DB encoding issues)
       const yesToken = tokenDetails.find((t) => t.outcome.toLowerCase() === 'yes');
       const noToken = tokenDetails.find((t) => t.outcome.toLowerCase() === 'no');
+      const yesPrice = yesToken?.price ?? 0.5;
+      const noPrice = noToken?.price ?? 0.5;
 
       const endDate = new Date(market.end_date_iso);
       const now = new Date();
@@ -212,40 +326,65 @@ export const marketDetailsAction: Action = {
       const question = sanitizeText(market.question);
       const description = market.description ? sanitizeText(market.description) : '';
 
+      // Analyze order books
+      const yesOrderBookAnalysis = analyzeOrderBook(yesToken?.orderBook || null);
+      const noOrderBookAnalysis = analyzeOrderBook(noToken?.orderBook || null);
+
+      // Calculate risk-reward profile
+      const riskReward = calculateRiskReward(yesPrice, daysRemaining);
+
       // Format volume
-      const volumeFormatted =
-        market.volume_num >= 1_000_000
-          ? `$${(market.volume_num / 1_000_000).toFixed(1)}M`
-          : `$${(market.volume_num / 1_000).toFixed(0)}K`;
+      const volumeFormatted = formatVolume(market.volume_num || 0);
+      const liquidityFormatted = formatVolume(market.liquidity || 0);
 
-      const liquidityFormatted =
-        market.liquidity >= 1_000_000
-          ? `$${(market.liquidity / 1_000_000).toFixed(1)}M`
-          : `$${(market.liquidity / 1_000).toFixed(0)}K`;
+      // Determine market sentiment
+      let marketSentiment = 'Neutral';
+      if (yesPrice >= 0.70) marketSentiment = 'Strongly Bullish';
+      else if (yesPrice >= 0.55) marketSentiment = 'Moderately Bullish';
+      else if (yesPrice <= 0.30) marketSentiment = 'Strongly Bearish';
+      else if (yesPrice <= 0.45) marketSentiment = 'Moderately Bearish';
 
-      let responseText = `MARKET ANALYSIS: ${question}
-${'='.repeat(Math.min(60, question.length))}
+      let responseText = `COMPREHENSIVE MARKET ANALYSIS
+${'━'.repeat(50)}
+"${question}"
 Analysis Date: ${etTime.dateStr} ${etTime.timeStr} ET
 
-PRICING:
-- YES: ${((yesToken?.price ?? 0.5) * 100).toFixed(1)}%${yesToken?.orderBook ? ` (spread: ${(yesToken.orderBook.spread * 100).toFixed(2)}%)` : ''}
-- NO: ${((noToken?.price ?? 0.5) * 100).toFixed(1)}%${noToken?.orderBook ? ` (spread: ${(noToken.orderBook.spread * 100).toFixed(2)}%)` : ''}
+CURRENT PRICING
+${'─'.repeat(30)}
+YES: ${(yesPrice * 100).toFixed(1)}%${yesToken?.orderBook ? ` | Spread: ${(yesToken.orderBook.spread * 100).toFixed(2)}%` : ''}
+NO:  ${(noPrice * 100).toFixed(1)}%${noToken?.orderBook ? ` | Spread: ${(noToken.orderBook.spread * 100).toFixed(2)}%` : ''}
+Market Sentiment: ${marketSentiment}
 
-MARKET METRICS:
-- Volume: ${volumeFormatted}
-- Liquidity: ${liquidityFormatted}
-- Status: ${statusText}
-- Orders: ${ordersText}
+MARKET METRICS
+${'─'.repeat(30)}
+Volume: ${volumeFormatted}
+Liquidity: ${liquidityFormatted}
+Status: ${statusText} | Accepting Orders: ${ordersText}
 
-TIMELINE:
-- End Date: ${endDate.toLocaleDateString()}
-- Time Remaining: ${daysRemaining > 0 ? `${daysRemaining} days` : 'Ended'}`;
+ORDER BOOK ANALYSIS (YES)
+${'─'.repeat(30)}
+Depth: ${yesOrderBookAnalysis.depth}
+Pressure: ${yesOrderBookAnalysis.bidPressure}
+Liquidity: ${yesOrderBookAnalysis.liquidity}
+Execution: ${yesOrderBookAnalysis.recommendation}
+
+RISK-REWARD PROFILE
+${'─'.repeat(30)}
+Potential Returns: ${riskReward.potentialReturn}
+Risk Level: ${riskReward.riskLevel}
+Time Value: ${riskReward.timeValue}
+
+TIMELINE
+${'─'.repeat(30)}
+End Date: ${endDate.toLocaleDateString()}
+Time Remaining: ${daysRemaining > 0 ? `${daysRemaining} days` : 'Ended'}`;
 
       // Add signals section if available
       if (signals.length > 0) {
-        responseText += `\n\nACTIVE SIGNALS (${signals.length}):`;
+        responseText += `\n\nACTIVE SIGNALS (${signals.length})`;
+        responseText += `\n${'─'.repeat(30)}`;
         for (const signal of signals.slice(0, 3)) {
-          responseText += `\n- ${signal.direction} @ ${signal.confidence}% confidence | Edge: ${signal.edge.toFixed(1)}%`;
+          responseText += `\n${signal.direction.toUpperCase()} | Confidence: ${signal.confidence}% | Edge: ${signal.edge.toFixed(1)}%`;
           if (signal.reasoning) {
             responseText += `\n  Thesis: ${sanitizeText(signal.reasoning.slice(0, 100))}...`;
           }
@@ -254,8 +393,9 @@ TIMELINE:
 
       // Add opportunity assessment
       if (marketOpportunity) {
-        responseText += `\n\nOPPORTUNITY SCORE: ${marketOpportunity.score}/100`;
-        responseText += `\nDirection: ${marketOpportunity.direction.toUpperCase()}`;
+        responseText += `\n\nOPPORTUNITY ASSESSMENT`;
+        responseText += `\n${'─'.repeat(30)}`;
+        responseText += `\nScore: ${marketOpportunity.score}/100 | Direction: ${marketOpportunity.direction.toUpperCase()}`;
         responseText += `\nConfidence: ${marketOpportunity.confidence}%`;
         if (marketOpportunity.reasoning) {
           responseText += `\nReasoning: ${sanitizeText(marketOpportunity.reasoning.slice(0, 150))}`;
@@ -264,19 +404,26 @@ TIMELINE:
 
       // Add related news section
       if (relatedNews.length > 0) {
-        responseText += `\n\nRELATED NEWS (${relatedNews.length}):`;
+        responseText += `\n\nRELATED NEWS (${relatedNews.length} items)`;
+        responseText += `\n${'─'.repeat(30)}`;
         for (const news of relatedNews.slice(0, 3)) {
           const sentiment = news.sentiment ? ` [${news.sentiment}]` : '';
-          responseText += `\n- [${news.source}] ${sanitizeText(news.title.slice(0, 70))}...${sentiment}`;
+          responseText += `\n- ${sanitizeText(news.title.slice(0, 70))}...${sentiment}`;
+          responseText += `\n  Source: ${news.source}`;
         }
       }
+
+      // Trading verdict
+      responseText += `\n\n${'━'.repeat(50)}`;
+      responseText += `\nTRADING VERDICT: ${riskReward.verdict}`;
 
       if (description) {
         responseText += `\n\nDESCRIPTION:\n${description.slice(0, 300)}${description.length > 300 ? '...' : ''}`;
       }
 
       // Add action hints
-      responseText += `\n\n---\nTo trade: "buy yes on ${market.question.slice(0, 30)}..." or "buy no..."`;
+      responseText += `\n\n${'─'.repeat(30)}`;
+      responseText += `\nTo trade: "buy yes on ${market.question.slice(0, 30)}..." or "buy no..."`;
 
       if (callback) {
         await callback({
@@ -294,6 +441,19 @@ TIMELINE:
           signals,
           relatedNews,
           opportunity: marketOpportunity,
+          analysis: {
+            yesPrice,
+            noPrice,
+            sentiment: marketSentiment,
+            orderBook: yesOrderBookAnalysis,
+            riskReward: {
+              potentialReturn: riskReward.potentialReturn,
+              riskLevel: riskReward.riskLevel,
+              timeValue: riskReward.timeValue,
+              verdict: riskReward.verdict,
+            },
+            daysRemaining,
+          },
         },
       };
     } catch (error) {
@@ -322,7 +482,22 @@ TIMELINE:
       {
         name: '{{agentName}}',
         content: {
-          text: 'Will a Bitcoin ETF be approved in 2024?\n\nCurrent Odds:\n- Yes: 72.5%\n- No: 27.5%\n\nMarket Stats:\n- Volume: $2,345,678\n- Liquidity: $123,456',
+          text: 'COMPREHENSIVE MARKET ANALYSIS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"Will Bitcoin reach $150k in 2026?"\nAnalysis Date: 2026-01-02 10:30 AM ET\n\nCURRENT PRICING\n──────────────────────────────────\nYES: 65.2% | Spread: 1.25%\nNO:  34.8% | Spread: 1.30%\nMarket Sentiment: Moderately Bullish\n\nMARKET METRICS\n──────────────────────────────────\nVolume: $2.5M\nLiquidity: $450K\nStatus: Active | Accepting Orders: Yes\n\nORDER BOOK ANALYSIS (YES)\n──────────────────────────────────\nDepth: Moderate\nPressure: Balanced\nLiquidity: Moderate\nExecution: Use limit orders, expect partial fills on larger positions\n\nRISK-REWARD PROFILE\n──────────────────────────────────\nPotential Returns: YES pays 53% | NO pays 187%\nRisk Level: Moderate-High\nTime Value: High (long duration)\n\nTRADING VERDICT: Leaning YES - solid entry if thesis aligns with probability',
+          action: 'MARKET_DETAILS',
+        },
+      },
+    ],
+    [
+      {
+        name: '{{userName}}',
+        content: {
+          text: 'What are the odds on the Super Bowl?',
+        },
+      },
+      {
+        name: '{{agentName}}',
+        content: {
+          text: 'COMPREHENSIVE MARKET ANALYSIS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"Will Chiefs win Super Bowl 2026?"\nAnalysis Date: 2026-01-02 10:30 AM ET\n\nCURRENT PRICING\n──────────────────────────────────\nYES: 32.0% | Spread: 2.10%\nNO:  68.0% | Spread: 2.05%\nMarket Sentiment: Moderately Bearish\n\nMARKET METRICS\n──────────────────────────────────\nVolume: $1.8M\nLiquidity: $320K\n\nRISK-REWARD PROFILE\n──────────────────────────────────\nPotential Returns: YES pays 213% | NO pays 47%\nRisk Level: Moderate\nTime Value: Low (approaching resolution)\n\nTRADING VERDICT: Leaning NO - solid entry if thesis aligns with probability',
           action: 'MARKET_DETAILS',
         },
       },
