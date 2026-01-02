@@ -39,6 +39,7 @@ import { LLMService } from './services/llm';
 import { TwitterService } from './services/twitter';
 import { StrategyLearningService } from './services/strategy-learning';
 import { ScheduledPostsService } from './services/scheduled-posts';
+import { MarketIntelligenceService } from './services/market-intelligence';
 
 // Actions
 import {
@@ -47,6 +48,7 @@ import {
   viewMarketsAction,
   viewPositionAction,
   marketDetailsAction,
+  researchMarketsAction,
 } from './actions';
 
 // Providers
@@ -152,6 +154,7 @@ export const polymarketPlugin: Plugin = {
     TwitterService,
     StrategyLearningService,
     ScheduledPostsService,
+    MarketIntelligenceService,
   ],
 
   // Actions for trading and market interaction
@@ -161,6 +164,7 @@ export const polymarketPlugin: Plugin = {
     viewMarketsAction,
     viewPositionAction,
     marketDetailsAction,
+    researchMarketsAction,
   ],
 
   // Providers for context injection

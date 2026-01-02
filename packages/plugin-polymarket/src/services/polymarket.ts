@@ -8,6 +8,7 @@
 import { Service, logger, type IAgentRuntime } from '@elizaos/core';
 import { ClobClient } from '@polymarket/clob-client';
 import { Wallet, providers } from 'ethers';
+import { getCurrentETTime, isMarketExpired, detectPastYearMarket } from '../providers/timezone';
 
 const { JsonRpcProvider } = providers;
 import type {
@@ -241,6 +242,10 @@ export class PolymarketService extends Service {
       let markets = this.parseMarkets(data);
       logger.debug({ parsedCount: markets.length }, '[PolymarketService] Parsed markets');
 
+      // Get current year for date filtering
+      const etTime = getCurrentETTime();
+      const currentYear = etTime.year;
+
       // Filter out markets that aren't tradeable
       const beforeFilter = markets.length;
       markets = markets.filter(m => {
@@ -249,6 +254,21 @@ export class PolymarketService extends Service {
 
         // Must be accepting orders
         if (!m.accepting_orders) return false;
+
+        // Filter out expired markets
+        if (isMarketExpired(m.end_date_iso)) {
+          logger.debug({ question: m.question.slice(0, 50), endDate: m.end_date_iso },
+            '[PolymarketService] Market filtered: expired');
+          return false;
+        }
+
+        // Filter out past-year markets (e.g., "2025" markets when current year is 2026)
+        const pastYearCheck = detectPastYearMarket(m.question, currentYear);
+        if (pastYearCheck.isPast) {
+          logger.debug({ question: m.question.slice(0, 50), mentionedYear: pastYearCheck.mentionedYear },
+            '[PolymarketService] Market filtered: past year reference');
+          return false;
+        }
 
         // Must have valid token IDs (not synthetic with -0/-1 suffix)
         // Real clobTokenIds are long numeric strings (70+ chars)
@@ -267,7 +287,7 @@ export class PolymarketService extends Service {
         return true;
       });
 
-      logger.info({ beforeFilter, afterFilter: markets.length }, '[PolymarketService] Markets after filtering');
+      logger.info({ beforeFilter, afterFilter: markets.length, currentYear }, '[PolymarketService] Markets after filtering');
       return markets;
     } catch (error) {
       logger.error({ error }, '[PolymarketService] Failed to fetch markets');
@@ -300,6 +320,200 @@ export class PolymarketService extends Service {
    */
   async searchMarkets(query: string, limit = 10): Promise<PolymarketMarket[]> {
     return this.getMarkets({ query, active: true, limit });
+  }
+
+  /**
+   * Get markets by category/topic
+   * Categories: politics, crypto, sports, finance, tech, entertainment, science, world
+   */
+  async getMarketsByCategory(category: string, limit = 20): Promise<PolymarketMarket[]> {
+    const categoryQueries: Record<string, string[]> = {
+      politics: ['president', 'election', 'congress', 'senate', 'vote', 'trump', 'biden', 'political'],
+      crypto: ['bitcoin', 'ethereum', 'crypto', 'btc', 'eth', 'defi', 'blockchain', 'token'],
+      sports: ['nfl', 'nba', 'mlb', 'super bowl', 'championship', 'world cup', 'finals'],
+      finance: ['fed', 'interest rate', 'inflation', 'stock', 'market', 'economy', 'gdp'],
+      tech: ['ai', 'apple', 'google', 'microsoft', 'meta', 'openai', 'tesla', 'technology'],
+      entertainment: ['oscar', 'grammy', 'movie', 'tv', 'celebrity', 'music', 'award'],
+      science: ['climate', 'nasa', 'space', 'medical', 'vaccine', 'research', 'discovery'],
+      world: ['ukraine', 'china', 'russia', 'war', 'international', 'treaty', 'conflict'],
+    };
+
+    const queries = categoryQueries[category.toLowerCase()] || [category];
+    const allMarkets: PolymarketMarket[] = [];
+    const seenIds = new Set<string>();
+
+    // Search for each query term
+    for (const query of queries.slice(0, 3)) { // Limit to 3 queries to avoid too many API calls
+      try {
+        const markets = await this.getMarkets({ query, active: true, limit: Math.ceil(limit / 2) });
+        for (const market of markets) {
+          if (!seenIds.has(market.condition_id)) {
+            seenIds.add(market.condition_id);
+            allMarkets.push(market);
+          }
+        }
+      } catch (error) {
+        logger.warn({ error, query }, '[PolymarketService] Category search query failed');
+      }
+    }
+
+    // Sort by volume and return top results
+    return allMarkets
+      .sort((a, b) => (b.volume_num || 0) - (a.volume_num || 0))
+      .slice(0, limit);
+  }
+
+  /**
+   * Get trending markets (high volume, active trading)
+   * Can filter by minimum volume and liquidity thresholds
+   */
+  async getTrendingMarkets(options: {
+    minVolume?: number;
+    minLiquidity?: number;
+    limit?: number;
+    sortBy?: 'volume' | 'liquidity' | 'spread';
+  } = {}): Promise<PolymarketMarket[]> {
+    const { minVolume = 10000, minLiquidity = 1000, limit = 20, sortBy = 'volume' } = options;
+
+    // Fetch more markets to filter from
+    const markets = await this.getMarkets({ active: true, limit: 100 });
+
+    // Filter by volume and liquidity thresholds
+    let filtered = markets.filter(m => {
+      const volume = m.volume_num || 0;
+      const liquidity = m.liquidity || 0;
+      return volume >= minVolume && liquidity >= minLiquidity;
+    });
+
+    // Sort by specified metric
+    filtered.sort((a, b) => {
+      if (sortBy === 'volume') return (b.volume_num || 0) - (a.volume_num || 0);
+      if (sortBy === 'liquidity') return (b.liquidity || 0) - (a.liquidity || 0);
+      if (sortBy === 'spread') return (a.spread || 1) - (b.spread || 1); // Lower spread is better
+      return 0;
+    });
+
+    return filtered.slice(0, limit);
+  }
+
+  /**
+   * Find markets that might be related to a news topic or event
+   * Uses fuzzy matching on keywords extracted from the topic
+   */
+  async findMarketsForTopic(topic: string, limit = 10): Promise<PolymarketMarket[]> {
+    // Extract keywords from topic (remove common words)
+    const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'will', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'or', 'and', 'as', 'if', 'but', 'not', 'that', 'this', 'it', 'its']);
+    const keywords = topic.toLowerCase()
+      .replace(/[^\w\s]/g, '')
+      .split(/\s+/)
+      .filter(word => word.length > 2 && !stopWords.has(word))
+      .slice(0, 5);
+
+    logger.debug({ topic, keywords }, '[PolymarketService] Finding markets for topic');
+
+    if (keywords.length === 0) {
+      return this.getMarkets({ active: true, limit });
+    }
+
+    const allMarkets: PolymarketMarket[] = [];
+    const seenIds = new Set<string>();
+
+    // Search for each keyword
+    for (const keyword of keywords) {
+      try {
+        const markets = await this.getMarkets({ query: keyword, active: true, limit: 10 });
+        for (const market of markets) {
+          if (!seenIds.has(market.condition_id)) {
+            seenIds.add(market.condition_id);
+            // Score by how many keywords match
+            const questionLower = market.question.toLowerCase();
+            const matchCount = keywords.filter(kw => questionLower.includes(kw)).length;
+            (market as any)._relevanceScore = matchCount;
+            allMarkets.push(market);
+          }
+        }
+      } catch (error) {
+        logger.warn({ error, keyword }, '[PolymarketService] Topic keyword search failed');
+      }
+    }
+
+    // Sort by relevance then volume
+    return allMarkets
+      .sort((a, b) => {
+        const scoreA = (a as any)._relevanceScore || 0;
+        const scoreB = (b as any)._relevanceScore || 0;
+        if (scoreB !== scoreA) return scoreB - scoreA;
+        return (b.volume_num || 0) - (a.volume_num || 0);
+      })
+      .slice(0, limit);
+  }
+
+  /**
+   * Analyze a market for trading opportunities
+   * Returns detailed analysis including price, volume, spread, and time context
+   */
+  async analyzeMarket(conditionId: string): Promise<{
+    market: PolymarketMarket;
+    analysis: {
+      yesPrice: number;
+      noPrice: number;
+      spread: number;
+      liquidity: number;
+      volumeRank: 'high' | 'medium' | 'low';
+      timeToExpiry: string;
+      isExpiringSoon: boolean;
+      tradingRecommendation: string;
+    };
+  } | null> {
+    const market = await this.getMarket(conditionId);
+    if (!market) return null;
+
+    const yesToken = market.tokens.find(t => t.outcome.toLowerCase() === 'yes');
+    const noToken = market.tokens.find(t => t.outcome.toLowerCase() === 'no');
+    const yesPrice = yesToken?.price || 0.5;
+    const noPrice = noToken?.price || 0.5;
+
+    // Calculate time to expiry
+    let timeToExpiry = 'Unknown';
+    let isExpiringSoon = false;
+    if (market.end_date_iso) {
+      const endDate = new Date(market.end_date_iso);
+      const now = new Date();
+      const hoursRemaining = (endDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+      isExpiringSoon = hoursRemaining < 48;
+      if (hoursRemaining < 1) timeToExpiry = 'Less than 1 hour';
+      else if (hoursRemaining < 24) timeToExpiry = `${Math.round(hoursRemaining)} hours`;
+      else if (hoursRemaining < 168) timeToExpiry = `${Math.round(hoursRemaining / 24)} days`;
+      else timeToExpiry = `${Math.round(hoursRemaining / 168)} weeks`;
+    }
+
+    // Volume ranking
+    const volume = market.volume_num || 0;
+    const volumeRank = volume > 100000 ? 'high' : volume > 10000 ? 'medium' : 'low';
+
+    // Trading recommendation based on metrics
+    let tradingRecommendation = 'No clear opportunity';
+    if (market.spread < 0.02 && volumeRank === 'high') {
+      tradingRecommendation = 'Liquid market with tight spread - good for trading';
+    } else if (market.spread > 0.1) {
+      tradingRecommendation = 'Wide spread - consider limit orders only';
+    } else if (isExpiringSoon && volumeRank === 'high') {
+      tradingRecommendation = 'Expiring soon with high volume - watch for resolution signals';
+    }
+
+    return {
+      market,
+      analysis: {
+        yesPrice,
+        noPrice,
+        spread: market.spread || Math.abs(yesPrice + noPrice - 1),
+        liquidity: market.liquidity || 0,
+        volumeRank,
+        timeToExpiry,
+        isExpiringSoon,
+        tradingRecommendation,
+      },
+    };
   }
 
   /**
