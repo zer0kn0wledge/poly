@@ -223,30 +223,37 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<any> {
       } catch (error) {
         lastError = error as Error;
 
+        // Extract Postgres-specific error details for debugging
+        const pgError = error as any;
+        const errorDetails = {
+          src: 'plugin:sql',
+          attempt,
+          maxRetries: this.maxRetries,
+          message: error instanceof Error ? error.message : String(error),
+          // Postgres-specific error fields
+          code: pgError?.code, // e.g., '23505' for unique violation, '23503' for FK violation
+          detail: pgError?.detail, // Postgres detail message
+          constraint: pgError?.constraint, // Which constraint failed
+          table: pgError?.table,
+          column: pgError?.column,
+          // Drizzle sometimes wraps errors in cause
+          causeCode: pgError?.cause?.code,
+          causeDetail: pgError?.cause?.detail,
+          causeConstraint: pgError?.cause?.constraint,
+        };
+
         if (attempt < this.maxRetries) {
           const backoffDelay = Math.min(this.baseDelay * 2 ** (attempt - 1), this.maxDelay);
 
           const jitter = Math.random() * this.jitterMax;
           const delay = backoffDelay + jitter;
 
-          logger.warn(
-            {
-              src: 'plugin:sql',
-              attempt,
-              maxRetries: this.maxRetries,
-              error: error instanceof Error ? error.message : String(error),
-            },
-            'Database operation failed, retrying'
-          );
+          logger.warn(errorDetails, 'Database operation failed, retrying');
 
           await new Promise((resolve) => setTimeout(resolve, delay));
         } else {
           logger.error(
-            {
-              src: 'plugin:sql',
-              totalAttempts: attempt,
-              error: error instanceof Error ? error.message : String(error),
-            },
+            { ...errorDetails, totalAttempts: attempt },
             'Max retry attempts reached'
           );
           throw error instanceof Error ? error : new Error(String(error));
