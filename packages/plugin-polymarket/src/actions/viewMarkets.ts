@@ -13,9 +13,13 @@ import type {
   Memory,
   State,
 } from '@elizaos/core';
-import { logger } from '@elizaos/core';
+import { logger, ModelType } from '@elizaos/core';
 import { PolymarketService } from '../services/polymarket';
 import type { PolymarketMarket } from '../types';
+
+// Minimum content depth requirements
+const MIN_ANALYSIS_CHARS = 500;
+const MIN_MARKET_INSIGHT_CHARS = 150;
 
 /**
  * Sanitize text to prevent database encoding issues.
@@ -106,45 +110,141 @@ function formatTimeRemaining(endDateIso: string): string {
 }
 
 /**
- * Analyze market characteristics for insights
+ * Comprehensive market analysis with deep insights
  */
-function analyzeMarket(m: PolymarketMarket): {
+interface MarketAnalysis {
   sentiment: string;
+  sentimentRationale: string;
   volatilityIndicator: string;
+  volatilityRationale: string;
   tradingOpportunity: string;
-} {
-  const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
-  const yesPrice = yesToken?.price ?? 0.5;
-  const volume = m.volume_num || 0;
-  const liquidity = m.liquidity || 0;
-  const spread = m.spread || 0;
-
-  // Sentiment based on odds
-  let sentiment = 'neutral';
-  if (yesPrice >= 0.7) sentiment = 'strongly bullish';
-  else if (yesPrice >= 0.55) sentiment = 'moderately bullish';
-  else if (yesPrice <= 0.3) sentiment = 'strongly bearish';
-  else if (yesPrice <= 0.45) sentiment = 'moderately bearish';
-
-  // Volatility based on volume/liquidity ratio and spread
-  let volatilityIndicator = 'moderate';
-  const volLiqRatio = volume / Math.max(liquidity, 1);
-  if (volLiqRatio > 20 || spread > 0.05) volatilityIndicator = 'high';
-  else if (volLiqRatio < 5 && spread < 0.02) volatilityIndicator = 'low';
-
-  // Trading opportunity assessment
-  let tradingOpportunity = 'standard';
-  if (spread < 0.02 && liquidity > 50000) tradingOpportunity = 'liquid - good for larger positions';
-  else if (spread > 0.08) tradingOpportunity = 'wide spread - use limit orders';
-  else if (yesPrice > 0.45 && yesPrice < 0.55) tradingOpportunity = 'contested - high conviction needed';
-
-  return { sentiment, volatilityIndicator, tradingOpportunity };
+  riskFactors: string[];
+  keyInsight: string;
+  edgeAssessment: string;
 }
 
 /**
- * Format a single market with detailed analytical data
+ * Analyze market characteristics for comprehensive insights
  */
-function formatMarketDetailed(m: PolymarketMarket, index: number, includeAnalysis: boolean = true): string {
+function analyzeMarket(m: PolymarketMarket): MarketAnalysis {
+  const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
+  const noToken = m.tokens.find(t => t.outcome.toLowerCase() === 'no');
+  const yesPrice = yesToken?.price ?? 0.5;
+  const noPrice = noToken?.price ?? 0.5;
+  const volume = m.volume_num || 0;
+  const liquidity = m.liquidity || 0;
+  const spread = m.spread || 0;
+  const volLiqRatio = volume / Math.max(liquidity, 1);
+
+  // Sentiment analysis with rationale
+  let sentiment = 'neutral';
+  let sentimentRationale = '';
+  if (yesPrice >= 0.85) {
+    sentiment = 'extremely bullish';
+    sentimentRationale = `Market prices ${(yesPrice * 100).toFixed(0)}% probability - near consensus. Consider: is there value in the contrarian NO position at ${(noPrice * 100).toFixed(0)}%?`;
+  } else if (yesPrice >= 0.7) {
+    sentiment = 'strongly bullish';
+    sentimentRationale = `${(yesPrice * 100).toFixed(0)}% YES odds indicate strong market conviction. Volume of ${formatVolume(volume)} suggests institutional interest.`;
+  } else if (yesPrice >= 0.55) {
+    sentiment = 'moderately bullish';
+    sentimentRationale = `Lean YES at ${(yesPrice * 100).toFixed(0)}% but not decisive. Watch for catalyst events that could push conviction higher.`;
+  } else if (yesPrice <= 0.15) {
+    sentiment = 'extremely bearish';
+    sentimentRationale = `Only ${(yesPrice * 100).toFixed(0)}% YES - market sees this as highly unlikely. Contrarian YES at this price offers asymmetric upside if consensus is wrong.`;
+  } else if (yesPrice <= 0.3) {
+    sentiment = 'strongly bearish';
+    sentimentRationale = `${(yesPrice * 100).toFixed(0)}% YES odds - market skeptical. NO position dominant but evaluate if odds properly reflect true probability.`;
+  } else if (yesPrice <= 0.45) {
+    sentiment = 'moderately bearish';
+    sentimentRationale = `Slight bearish lean at ${(yesPrice * 100).toFixed(0)}% YES. Market slightly favors NO outcome but remains contestable.`;
+  } else {
+    sentiment = 'neutral/contested';
+    sentimentRationale = `50/50 territory at ${(yesPrice * 100).toFixed(0)}% YES. High uncertainty - either side viable. Wait for clearer signal or trade mean reversion.`;
+  }
+
+  // Volatility analysis with rationale
+  let volatilityIndicator = 'moderate';
+  let volatilityRationale = '';
+  if (volLiqRatio > 30 || spread > 0.08) {
+    volatilityIndicator = 'very high';
+    volatilityRationale = `Vol/Liq ratio of ${volLiqRatio.toFixed(1)}x and ${(spread * 100).toFixed(1)}% spread indicate active price discovery. Expect 5-10% swings on news.`;
+  } else if (volLiqRatio > 20 || spread > 0.05) {
+    volatilityIndicator = 'high';
+    volatilityRationale = `Elevated turnover (${volLiqRatio.toFixed(1)}x vol/liq) suggests ongoing revaluation. Position sizing should account for 3-5% daily moves.`;
+  } else if (volLiqRatio < 3 && spread < 0.015) {
+    volatilityIndicator = 'very low';
+    volatilityRationale = `Tight spread (${(spread * 100).toFixed(2)}%) and low turnover indicate stable consensus. Price unlikely to move without major catalyst.`;
+  } else if (volLiqRatio < 5 && spread < 0.025) {
+    volatilityIndicator = 'low';
+    volatilityRationale = `Stable trading conditions with ${(spread * 100).toFixed(1)}% spread. Good for patient accumulation strategies.`;
+  } else {
+    volatilityRationale = `Standard market dynamics. Spread of ${(spread * 100).toFixed(1)}% is workable for most position sizes.`;
+  }
+
+  // Trading opportunity assessment
+  let tradingOpportunity = '';
+  if (spread < 0.015 && liquidity > 100000) {
+    tradingOpportunity = `Excellent liquidity ($${(liquidity / 1000).toFixed(0)}K) with tight spread - ideal for positions up to $${Math.floor(liquidity * 0.05 / 1000)}K without significant slippage.`;
+  } else if (spread < 0.025 && liquidity > 50000) {
+    tradingOpportunity = `Good execution environment. Can comfortably trade $${Math.floor(liquidity * 0.03 / 1000)}K-${Math.floor(liquidity * 0.05 / 1000)}K positions.`;
+  } else if (spread > 0.08) {
+    tradingOpportunity = `Wide spread (${(spread * 100).toFixed(1)}%) - use limit orders only. Market orders will lose ${(spread * 100).toFixed(1)}% immediately to spread.`;
+  } else if (yesPrice > 0.45 && yesPrice < 0.55) {
+    tradingOpportunity = `Contested odds near 50/50 - requires high conviction thesis. Consider waiting for clearer directional signal before entry.`;
+  } else {
+    tradingOpportunity = `Standard trading conditions. Limit orders recommended to capture spread.`;
+  }
+
+  // Risk factors
+  const riskFactors: string[] = [];
+  if (liquidity < 10000) riskFactors.push('Low liquidity risk - difficult to exit large positions');
+  if (spread > 0.05) riskFactors.push(`Wide spread (${(spread * 100).toFixed(1)}%) creates immediate mark-to-market loss on entry`);
+  if (volLiqRatio > 25) riskFactors.push('High volatility - position sizing critical');
+  if (yesPrice > 0.92 || yesPrice < 0.08) riskFactors.push('Extreme odds - limited upside vs potential total loss');
+  if (volume < 5000) riskFactors.push('Low volume - potential for manipulation or stale pricing');
+  if (riskFactors.length === 0) riskFactors.push('Standard market risk profile');
+
+  // Key insight
+  let keyInsight = '';
+  if (yesPrice > 0.7 && spread < 0.03 && liquidity > 50000) {
+    keyInsight = `High conviction market with institutional-grade liquidity. Smart money appears positioned YES. Contrarian NO only if you have differentiated information.`;
+  } else if (yesPrice < 0.3 && spread < 0.03 && liquidity > 50000) {
+    keyInsight = `Market strongly expects NO outcome. YES position is contrarian bet - only enter with clear catalyst thesis for probability revision.`;
+  } else if (yesPrice > 0.45 && yesPrice < 0.55 && volume > 100000) {
+    keyInsight = `High-volume contested market. Suggests genuine uncertainty among sophisticated traders. Edge will come from superior information, not market structure.`;
+  } else if (spread > 0.06 && liquidity < 20000) {
+    keyInsight = `Thin market with wide spreads - potential for mispricing but also manipulation risk. Trade small, use limits, be patient.`;
+  } else {
+    keyInsight = `Standard market dynamics. Focus on fundamental analysis of the underlying question rather than market microstructure.`;
+  }
+
+  // Edge assessment
+  let edgeAssessment = '';
+  const impliedProb = yesPrice * 100;
+  if (impliedProb > 70) {
+    edgeAssessment = `YES priced at ${impliedProb.toFixed(0)}%. Edge exists if true probability is above ${(impliedProb + 5).toFixed(0)}% (YES) or below ${(impliedProb - 15).toFixed(0)}% (contrarian NO).`;
+  } else if (impliedProb < 30) {
+    edgeAssessment = `YES priced at ${impliedProb.toFixed(0)}%. Edge exists if true probability is below ${(impliedProb - 5).toFixed(0)}% (NO) or above ${(impliedProb + 15).toFixed(0)}% (contrarian YES).`;
+  } else {
+    edgeAssessment = `YES priced at ${impliedProb.toFixed(0)}%. In contested range - need 10%+ edge estimate to justify position given spread and uncertainty.`;
+  }
+
+  return {
+    sentiment,
+    sentimentRationale,
+    volatilityIndicator,
+    volatilityRationale,
+    tradingOpportunity,
+    riskFactors,
+    keyInsight,
+    edgeAssessment,
+  };
+}
+
+/**
+ * Format a single market with detailed analytical data (brief version for lists)
+ */
+function formatMarketBrief(m: PolymarketMarket, index: number): string {
   const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
   const noToken = m.tokens.find(t => t.outcome.toLowerCase() === 'no');
   const yesPrice = yesToken?.price ?? 0.5;
@@ -155,14 +255,126 @@ function formatMarketDetailed(m: PolymarketMarket, index: number, includeAnalysi
   const timeLeft = formatTimeRemaining(m.end_date_iso);
   const spread = ((m.spread || 0) * 100).toFixed(1);
 
-  let base = `${index}. "${question}"\n   Odds: YES ${(yesPrice * 100).toFixed(0)}% / NO ${(noPrice * 100).toFixed(0)}% | Vol: ${volume} | Liq: ${liquidity} | Spread: ${spread}% | Ends: ${timeLeft}`;
+  return `${index}. "${question}"\n   Odds: YES ${(yesPrice * 100).toFixed(0)}% / NO ${(noPrice * 100).toFixed(0)}% | Vol: ${volume} | Liq: ${liquidity} | Spread: ${spread}% | Ends: ${timeLeft}`;
+}
+
+/**
+ * Format a single market with comprehensive analytical data
+ * Meets minimum content depth requirements for professional analysis
+ */
+function formatMarketDetailed(m: PolymarketMarket, index: number, includeAnalysis: boolean = true): string {
+  const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
+  const noToken = m.tokens.find(t => t.outcome.toLowerCase() === 'no');
+  const yesPrice = yesToken?.price ?? 0.5;
+  const noPrice = noToken?.price ?? 0.5;
+  const question = sanitizeText(m.question);
+  const volume = formatVolume(m.volume_num || 0);
+  const liquidity = formatVolume(m.liquidity || 0);
+  const timeLeft = formatTimeRemaining(m.end_date_iso);
+  const spread = ((m.spread || 0) * 100).toFixed(1);
+
+  // Base market data
+  let output = `${index}. "${question}"
+   MARKET DATA:
+   - Current Odds: YES ${(yesPrice * 100).toFixed(0)}% / NO ${(noPrice * 100).toFixed(0)}%
+   - Total Volume: ${volume}
+   - Liquidity Pool: ${liquidity}
+   - Bid-Ask Spread: ${spread}%
+   - Time to Resolution: ${timeLeft}`;
 
   if (includeAnalysis) {
     const analysis = analyzeMarket(m);
-    base += `\n   Analysis: ${analysis.sentiment} sentiment, ${analysis.volatilityIndicator} volatility. ${analysis.tradingOpportunity}`;
+
+    output += `
+
+   SENTIMENT ANALYSIS:
+   - Market Sentiment: ${analysis.sentiment.toUpperCase()}
+   - ${analysis.sentimentRationale}
+
+   VOLATILITY & LIQUIDITY:
+   - Volatility: ${analysis.volatilityIndicator.toUpperCase()}
+   - ${analysis.volatilityRationale}
+
+   TRADING CONSIDERATIONS:
+   - ${analysis.tradingOpportunity}
+   - Risk Factors: ${analysis.riskFactors.join('; ')}
+
+   KEY INSIGHT:
+   ${analysis.keyInsight}
+
+   EDGE ASSESSMENT:
+   ${analysis.edgeAssessment}`;
   }
 
-  return base;
+  return output;
+}
+
+/**
+ * Generate AI-powered deep analysis for a market using the LLM
+ */
+async function generateDeepAnalysis(
+  runtime: IAgentRuntime,
+  market: PolymarketMarket,
+  category?: string
+): Promise<string> {
+  const yesToken = market.tokens.find(t => t.outcome.toLowerCase() === 'yes');
+  const yesPrice = yesToken?.price ?? 0.5;
+  const volume = market.volume_num || 0;
+  const liquidity = market.liquidity || 0;
+  const spread = market.spread || 0;
+
+  const prompt = `You are Zeracle, an elite prediction market analyst providing Bloomberg-grade analysis.
+
+MARKET: "${market.question}"
+CATEGORY: ${category || 'General'}
+CURRENT ODDS: YES ${(yesPrice * 100).toFixed(0)}% / NO ${((1 - yesPrice) * 100).toFixed(0)}%
+TOTAL VOLUME: $${volume.toLocaleString()}
+LIQUIDITY: $${liquidity.toLocaleString()}
+SPREAD: ${(spread * 100).toFixed(2)}%
+
+Provide a comprehensive analysis (minimum 400 characters) covering:
+
+1. MARKET ASSESSMENT: What is the market pricing and why? Is the consensus correct or is there potential mispricing?
+
+2. KEY FACTORS: What specific events, data points, or catalysts will determine the outcome? Be specific.
+
+3. RISK ANALYSIS: What could go wrong for both YES and NO positions? What's the downside scenario?
+
+4. TRADING THESIS: If you were to take a position, which side and why? What would invalidate your thesis?
+
+5. EDGE OPPORTUNITY: Where might there be market inefficiency? What would smart money be watching?
+
+Requirements:
+- Be specific with numbers and percentages
+- Reference actual market data provided
+- Professional analytical tone
+- No emojis or hashtags
+- Minimum 400 characters
+
+Write the analysis:`;
+
+  try {
+    const response = await runtime.useModel(ModelType.TEXT_SMALL, { prompt });
+    if (typeof response === 'string' && response.length >= 200) {
+      return sanitizeText(response);
+    }
+  } catch (error) {
+    logger.warn({ error, market: market.question.slice(0, 50) }, '[ViewMarkets] Deep analysis generation failed');
+  }
+
+  // Fallback to structured analysis if LLM fails
+  const analysis = analyzeMarket(market);
+  return `MARKET ASSESSMENT: ${analysis.sentimentRationale}
+
+VOLATILITY PROFILE: ${analysis.volatilityRationale}
+
+TRADING CONSIDERATIONS: ${analysis.tradingOpportunity}
+
+RISK FACTORS: ${analysis.riskFactors.join('. ')}
+
+KEY INSIGHT: ${analysis.keyInsight}
+
+EDGE ASSESSMENT: ${analysis.edgeAssessment}`;
 }
 
 export const viewMarketsAction: Action = {
@@ -281,30 +493,136 @@ export const viewMarketsAction: Action = {
         return { success: true, text: noResultsMsg, data: { markets: [] } };
       }
 
-      // Format markets with detailed analytical data
-      const formattedMarkets = markets.map((m, i) => formatMarketDetailed(m, i + 1, true));
-
-      // Calculate aggregate stats
+      // Calculate aggregate stats first
       const totalVolume = markets.reduce((sum, m) => sum + (m.volume_num || 0), 0);
       const avgLiquidity = markets.reduce((sum, m) => sum + (m.liquidity || 0), 0) / markets.length;
       const avgSpread = markets.reduce((sum, m) => sum + (m.spread || 0), 0) / markets.length;
 
       // Aggregate sentiment analysis
-      const sentimentCounts = { bullish: 0, bearish: 0, neutral: 0 };
+      const sentimentCounts = { bullish: 0, bearish: 0, neutral: 0, extreme: 0 };
+      const volatilityCounts = { high: 0, moderate: 0, low: 0 };
       for (const m of markets) {
         const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
         const yesPrice = yesToken?.price ?? 0.5;
-        if (yesPrice >= 0.55) sentimentCounts.bullish++;
+        const vol = m.volume_num || 0;
+        const liq = m.liquidity || 1;
+        const ratio = vol / liq;
+
+        if (yesPrice >= 0.85 || yesPrice <= 0.15) sentimentCounts.extreme++;
+        else if (yesPrice >= 0.55) sentimentCounts.bullish++;
         else if (yesPrice <= 0.45) sentimentCounts.bearish++;
         else sentimentCounts.neutral++;
+
+        if (ratio > 20 || (m.spread || 0) > 0.05) volatilityCounts.high++;
+        else if (ratio < 5 && (m.spread || 0) < 0.025) volatilityCounts.low++;
+        else volatilityCounts.moderate++;
       }
 
-      // Build comprehensive response with market overview
-      const header = `MARKET ANALYSIS: ${searchContext}\n` +
-        `Found ${markets.length} markets | Total Volume: ${formatVolume(totalVolume)} | Avg Liquidity: ${formatVolume(avgLiquidity)} | Avg Spread: ${(avgSpread * 100).toFixed(2)}%\n` +
-        `Market Sentiment: ${sentimentCounts.bullish} bullish, ${sentimentCounts.bearish} bearish, ${sentimentCounts.neutral} neutral\n\n`;
+      // Determine if single market for deep analysis
+      const isSingleMarket = markets.length === 1;
+      const wantsDeepAnalysis = text.toLowerCase().includes('detail') ||
+                                text.toLowerCase().includes('deep') ||
+                                text.toLowerCase().includes('analysis') ||
+                                isSingleMarket;
 
-      const responseText = header + formattedMarkets.join('\n\n');
+      // Format markets - use comprehensive format for single/deep, brief for lists
+      let formattedMarkets: string[];
+      if (wantsDeepAnalysis && markets.length <= 3) {
+        // For 1-3 markets with deep analysis request, generate LLM-powered insights
+        formattedMarkets = [];
+        for (let i = 0; i < markets.length; i++) {
+          const m = markets[i];
+          const baseFormat = formatMarketDetailed(m, i + 1, true);
+
+          // For single market, add AI-generated deep analysis
+          if (isSingleMarket) {
+            const deepAnalysis = await generateDeepAnalysis(runtime, m, detectedCategory || undefined);
+            formattedMarkets.push(`${baseFormat}\n\n   AI-POWERED DEEP ANALYSIS:\n   ${deepAnalysis.split('\n').join('\n   ')}`);
+          } else {
+            formattedMarkets.push(baseFormat);
+          }
+        }
+      } else {
+        // For multiple markets, use detailed format but not deep analysis
+        formattedMarkets = markets.map((m, i) => formatMarketDetailed(m, i + 1, true));
+      }
+
+      // Build comprehensive response header with market intelligence overview
+      const now = new Date();
+      const timestamp = now.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+
+      // Generate sector insight based on category
+      let sectorInsight = '';
+      if (detectedCategory) {
+        const catUpper = detectedCategory.toUpperCase();
+        if (sentimentCounts.bullish > sentimentCounts.bearish * 2) {
+          sectorInsight = `${catUpper} sector showing strong bullish bias - ${sentimentCounts.bullish}/${markets.length} markets favor YES outcomes. Consider contrarian NO positions in overbought markets.`;
+        } else if (sentimentCounts.bearish > sentimentCounts.bullish * 2) {
+          sectorInsight = `${catUpper} sector leaning bearish - ${sentimentCounts.bearish}/${markets.length} markets favor NO. Look for YES value plays in oversold conditions.`;
+        } else if (sentimentCounts.neutral > markets.length / 2) {
+          sectorInsight = `${catUpper} sector highly contested - ${sentimentCounts.neutral}/${markets.length} markets in coin-flip territory. High uncertainty means potential for sharp moves on catalysts.`;
+        } else {
+          sectorInsight = `${catUpper} sector showing mixed signals. Selective positioning recommended based on individual market analysis.`;
+        }
+      } else {
+        sectorInsight = `Cross-sector sample showing ${sentimentCounts.bullish} bullish, ${sentimentCounts.bearish} bearish, ${sentimentCounts.neutral} contested markets.`;
+      }
+
+      // Liquidity assessment
+      let liquidityInsight = '';
+      if (avgLiquidity > 100000) {
+        liquidityInsight = `Excellent market depth (avg $${(avgLiquidity / 1000).toFixed(0)}K liquidity) - suitable for institutional-size positions.`;
+      } else if (avgLiquidity > 30000) {
+        liquidityInsight = `Good liquidity conditions (avg $${(avgLiquidity / 1000).toFixed(0)}K) - retail and small institutional positions viable.`;
+      } else {
+        liquidityInsight = `Thin liquidity (avg $${(avgLiquidity / 1000).toFixed(0)}K) - use limit orders and smaller position sizes.`;
+      }
+
+      // Volatility assessment
+      let volatilityInsight = '';
+      if (volatilityCounts.high > markets.length / 2) {
+        volatilityInsight = `High volatility environment - ${volatilityCounts.high}/${markets.length} markets showing elevated activity. Active risk management essential.`;
+      } else if (volatilityCounts.low > markets.length / 2) {
+        volatilityInsight = `Low volatility regime - stable pricing suggests consensus. Watch for breakout catalysts.`;
+      } else {
+        volatilityInsight = `Mixed volatility profile across markets. Position sizing should be market-specific.`;
+      }
+
+      const header = `================================================================================
+ZERACLE MARKET INTELLIGENCE REPORT
+================================================================================
+Generated: ${timestamp}
+Query: ${searchContext}
+Markets Analyzed: ${markets.length}
+
+AGGREGATE METRICS:
+- Total Volume: ${formatVolume(totalVolume)}
+- Average Liquidity: ${formatVolume(avgLiquidity)}
+- Average Spread: ${(avgSpread * 100).toFixed(2)}%
+- Sentiment Distribution: ${sentimentCounts.bullish} bullish | ${sentimentCounts.bearish} bearish | ${sentimentCounts.neutral} contested | ${sentimentCounts.extreme} extreme
+
+SECTOR OVERVIEW:
+${sectorInsight}
+
+LIQUIDITY ASSESSMENT:
+${liquidityInsight}
+
+VOLATILITY PROFILE:
+${volatilityInsight}
+
+================================================================================
+INDIVIDUAL MARKET ANALYSIS
+================================================================================
+
+`;
+
+      const responseText = header + formattedMarkets.join('\n\n---\n\n');
+
+      // Content depth validation
+      if (responseText.length < MIN_ANALYSIS_CHARS) {
+        logger.warn({ length: responseText.length, min: MIN_ANALYSIS_CHARS },
+          '[ViewMarkets] Response below minimum content depth');
+      }
 
       logger.info({
         category: detectedCategory,

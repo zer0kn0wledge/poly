@@ -456,39 +456,125 @@ export class PolymarketService extends Service {
   }
 
   /**
-   * Get markets by category/topic
+   * Category configuration with inclusion keywords (for searching) and
+   * exclusion keywords (to filter out wrong-category results)
+   */
+  private static CATEGORY_CONFIG: Record<string, {
+    searchTerms: string[];
+    verifyKeywords: string[];  // Market must contain at least one
+    excludeKeywords: string[]; // Market must NOT contain any
+  }> = {
+    sports: {
+      searchTerms: ['nfl', 'nba', 'mlb', 'nhl', 'super bowl', 'world series', 'stanley cup', 'championship game', 'playoffs'],
+      verifyKeywords: ['nfl', 'nba', 'mlb', 'nhl', 'super bowl', 'world series', 'stanley cup', 'playoffs', 'game', 'match', 'championship', 'win', 'team', 'player', 'season', 'finals', 'soccer', 'football', 'basketball', 'baseball', 'hockey', 'tennis', 'golf', 'boxing', 'ufc', 'mma', 'olympics'],
+      excludeKeywords: ['trump', 'biden', 'election', 'president', 'congress', 'senate', 'governor', 'democrat', 'republican', 'vote', 'political', 'bitcoin', 'ethereum', 'crypto', 'fed', 'inflation', 'interest rate'],
+    },
+    politics: {
+      searchTerms: ['president', 'election', 'congress', 'senate', 'trump', 'biden', 'governor'],
+      verifyKeywords: ['president', 'election', 'congress', 'senate', 'trump', 'biden', 'governor', 'vote', 'political', 'democrat', 'republican', 'primary', 'nominee', 'electoral', 'cabinet', 'impeach', 'legislation'],
+      excludeKeywords: ['nfl', 'nba', 'mlb', 'super bowl', 'championship', 'playoffs', 'game score', 'world series', 'finals game'],
+    },
+    crypto: {
+      searchTerms: ['bitcoin', 'ethereum', 'btc price', 'eth price', 'crypto', 'solana'],
+      verifyKeywords: ['bitcoin', 'btc', 'ethereum', 'eth', 'crypto', 'blockchain', 'token', 'defi', 'solana', 'sol', 'nft', 'web3', 'binance', 'coinbase', 'altcoin'],
+      excludeKeywords: ['trump', 'biden', 'election', 'president', 'nfl', 'nba', 'super bowl', 'championship'],
+    },
+    finance: {
+      searchTerms: ['fed', 'interest rate', 'inflation', 'recession', 'gdp', 'stock market'],
+      verifyKeywords: ['fed', 'federal reserve', 'interest rate', 'inflation', 'recession', 'gdp', 'stock', 'economy', 'unemployment', 'cpi', 'treasury', 'yield', 'dow', 'nasdaq', 's&p'],
+      excludeKeywords: ['nfl', 'nba', 'super bowl', 'championship', 'trump election', 'biden election'],
+    },
+    tech: {
+      searchTerms: ['ai', 'apple', 'google', 'microsoft', 'openai', 'tesla', 'elon musk'],
+      verifyKeywords: ['ai', 'artificial intelligence', 'apple', 'google', 'microsoft', 'openai', 'tesla', 'meta', 'amazon', 'nvidia', 'chatgpt', 'technology', 'tech', 'software', 'hardware'],
+      excludeKeywords: ['nfl', 'nba', 'super bowl', 'election', 'president'],
+    },
+    entertainment: {
+      searchTerms: ['oscar', 'grammy', 'emmy', 'movie', 'celebrity', 'music award'],
+      verifyKeywords: ['oscar', 'grammy', 'emmy', 'movie', 'film', 'tv', 'celebrity', 'music', 'award', 'actor', 'actress', 'singer', 'album', 'box office'],
+      excludeKeywords: ['nfl', 'nba', 'election', 'president', 'bitcoin', 'crypto'],
+    },
+    science: {
+      searchTerms: ['climate', 'nasa', 'space', 'vaccine', 'medical', 'research'],
+      verifyKeywords: ['climate', 'nasa', 'space', 'spacex', 'vaccine', 'medical', 'research', 'discovery', 'science', 'health', 'fda', 'drug', 'study'],
+      excludeKeywords: ['nfl', 'nba', 'election', 'trump', 'biden'],
+    },
+    world: {
+      searchTerms: ['ukraine', 'russia', 'china', 'war', 'international', 'treaty'],
+      verifyKeywords: ['ukraine', 'russia', 'china', 'war', 'international', 'treaty', 'conflict', 'geopolitical', 'nato', 'eu', 'un', 'sanctions', 'military'],
+      excludeKeywords: ['nfl', 'nba', 'super bowl', 'championship game', 'playoffs'],
+    },
+  };
+
+  /**
+   * Verify that a market belongs to the requested category
+   */
+  private verifyCategoryMatch(market: PolymarketMarket, category: string): boolean {
+    const config = PolymarketService.CATEGORY_CONFIG[category.toLowerCase()];
+    if (!config) return true; // Unknown category, accept all
+
+    const questionLower = market.question.toLowerCase();
+    const descriptionLower = (market.description || '').toLowerCase();
+    const fullText = `${questionLower} ${descriptionLower}`;
+
+    // Check exclusion keywords first - reject if any match
+    for (const excludeWord of config.excludeKeywords) {
+      if (fullText.includes(excludeWord.toLowerCase())) {
+        logger.debug({ market: market.question.slice(0, 50), excludeWord, category },
+          '[PolymarketService] Market excluded by keyword');
+        return false;
+      }
+    }
+
+    // Must contain at least one verification keyword
+    const hasVerifyKeyword = config.verifyKeywords.some(keyword =>
+      fullText.includes(keyword.toLowerCase())
+    );
+
+    if (!hasVerifyKeyword) {
+      logger.debug({ market: market.question.slice(0, 50), category },
+        '[PolymarketService] Market rejected - no matching verification keywords');
+    }
+
+    return hasVerifyKeyword;
+  }
+
+  /**
+   * Get markets by category/topic with strict verification
    * Categories: politics, crypto, sports, finance, tech, entertainment, science, world
    */
   async getMarketsByCategory(category: string, limit = 20): Promise<PolymarketMarket[]> {
-    const categoryQueries: Record<string, string[]> = {
-      politics: ['president', 'election', 'congress', 'senate', 'vote', 'trump', 'biden', 'political'],
-      crypto: ['bitcoin', 'ethereum', 'crypto', 'btc', 'eth', 'defi', 'blockchain', 'token'],
-      sports: ['nfl', 'nba', 'mlb', 'super bowl', 'championship', 'world cup', 'finals'],
-      finance: ['fed', 'interest rate', 'inflation', 'stock', 'market', 'economy', 'gdp'],
-      tech: ['ai', 'apple', 'google', 'microsoft', 'meta', 'openai', 'tesla', 'technology'],
-      entertainment: ['oscar', 'grammy', 'movie', 'tv', 'celebrity', 'music', 'award'],
-      science: ['climate', 'nasa', 'space', 'medical', 'vaccine', 'research', 'discovery'],
-      world: ['ukraine', 'china', 'russia', 'war', 'international', 'treaty', 'conflict'],
-    };
+    const config = PolymarketService.CATEGORY_CONFIG[category.toLowerCase()];
 
-    const queries = categoryQueries[category.toLowerCase()] || [category];
+    // Fallback for unknown categories
+    if (!config) {
+      logger.warn({ category }, '[PolymarketService] Unknown category, using direct search');
+      return this.searchMarkets(category, limit);
+    }
+
     const allMarkets: PolymarketMarket[] = [];
     const seenIds = new Set<string>();
 
-    // Search for each query term
-    for (const query of queries.slice(0, 3)) { // Limit to 3 queries to avoid too many API calls
+    // Search using category-specific terms
+    for (const searchTerm of config.searchTerms.slice(0, 4)) {
       try {
-        const markets = await this.getMarkets({ query, active: true, limit: Math.ceil(limit / 2) });
+        const markets = await this.getMarkets({ query: searchTerm, active: true, limit: limit });
         for (const market of markets) {
           if (!seenIds.has(market.condition_id)) {
-            seenIds.add(market.condition_id);
-            allMarkets.push(market);
+            // CRITICAL: Verify the market actually belongs to this category
+            if (this.verifyCategoryMatch(market, category)) {
+              seenIds.add(market.condition_id);
+              allMarkets.push(market);
+            }
           }
         }
       } catch (error) {
-        logger.warn({ error, query }, '[PolymarketService] Category search query failed');
+        logger.warn({ error, searchTerm }, '[PolymarketService] Category search query failed');
       }
     }
+
+    logger.info({ category, found: allMarkets.length, limit },
+      '[PolymarketService] Category search completed with verification');
 
     // Sort by volume and return top results
     return allMarkets
