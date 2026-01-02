@@ -60,7 +60,12 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/scripts ./scripts
 
+# Install external plugins from npm that aren't in the monorepo
+RUN bun add @elizaos/plugin-anthropic@latest --no-save || echo "Plugin install completed"
+
 ENV NODE_ENV=production
+# Trust proxy for Railway/cloud deployments (fixes X-Forwarded-For header issues)
+ENV TRUST_PROXY=1
 
 EXPOSE 3000
 EXPOSE 50000-50100/udp

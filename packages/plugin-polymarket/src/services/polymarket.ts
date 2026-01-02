@@ -517,35 +517,90 @@ export class PolymarketService extends Service {
   }
 
   /**
+   * Parse tokens from various API response formats
+   */
+  private parseTokens(m: any): { token_id: string; outcome: string; price: number; winner?: boolean }[] {
+    const conditionId = m.conditionId || m.condition_id || '';
+
+    // Try different possible token/outcome structures
+    let rawTokens = m.tokens || m.outcomes || m.clobTokenIds;
+
+    // If it's an array, use it directly
+    if (Array.isArray(rawTokens) && rawTokens.length > 0) {
+      return rawTokens.map((t: any, idx: number) => ({
+        token_id: t.token_id || t.tokenId || t.clobTokenId || t || `${conditionId}-${idx}`,
+        outcome: t.outcome || (idx === 0 ? 'Yes' : 'No'),
+        price: parseFloat(t.price || t.outcomePrices?.[idx] || '0.5'),
+        winner: t.winner,
+      }));
+    }
+
+    // If clobTokenIds is an array of strings
+    if (Array.isArray(m.clobTokenIds)) {
+      const prices = m.outcomePrices || [];
+      return m.clobTokenIds.map((tokenId: string, idx: number) => ({
+        token_id: tokenId,
+        outcome: idx === 0 ? 'Yes' : 'No',
+        price: parseFloat(prices[idx] || '0.5'),
+        winner: undefined,
+      }));
+    }
+
+    // If it's an object with keys like "0", "1" or "yes", "no"
+    if (rawTokens && typeof rawTokens === 'object' && !Array.isArray(rawTokens)) {
+      const entries = Object.entries(rawTokens);
+      return entries.map(([key, t]: [string, any], idx: number) => ({
+        token_id: t?.token_id || t?.tokenId || t || `${conditionId}-${idx}`,
+        outcome: t?.outcome || key || (idx === 0 ? 'Yes' : 'No'),
+        price: parseFloat(t?.price || '0.5'),
+        winner: t?.winner,
+      }));
+    }
+
+    // Generate default tokens if nothing found
+    return [
+      { token_id: `${conditionId}-0`, outcome: 'Yes', price: 0.5 },
+      { token_id: `${conditionId}-1`, outcome: 'No', price: 0.5 },
+    ];
+  }
+
+  /**
    * Parse raw market data into PolymarketMarket format
    */
   private parseMarkets(data: any[]): PolymarketMarket[] {
-    return data.map((m) => ({
-      condition_id: m.conditionId || m.condition_id,
-      question_id: m.questionId || m.question_id,
-      question: m.question,
-      description: m.description || '',
-      market_slug: m.slug || m.market_slug || '',
-      end_date_iso: m.endDate || m.end_date_iso || '',
-      game_start_time: m.gameStartTime || m.game_start_time,
-      tokens: (m.tokens || m.outcomes || []).map((t: any, idx: number) => ({
-        token_id: t.token_id || t.tokenId || `${m.conditionId || m.condition_id}-${idx}`,
-        outcome: t.outcome || (idx === 0 ? 'Yes' : 'No'),
-        price: parseFloat(t.price || '0.5'),
-        winner: t.winner,
-      })),
-      active: m.active ?? true,
-      closed: m.closed ?? false,
-      archived: m.archived ?? false,
-      accepting_orders: m.acceptingOrders ?? m.accepting_orders ?? true,
-      accepting_order_timestamp: m.acceptingOrderTimestamp || m.accepting_order_timestamp,
-      minimum_order_size: parseFloat(m.minimumOrderSize || m.minimum_order_size || '1'),
-      minimum_tick_size: parseFloat(m.minimumTickSize || m.minimum_tick_size || '0.01'),
-      neg_risk: m.negRisk ?? m.neg_risk ?? false,
-      volume: parseFloat(m.volume || '0'),
-      volume_num: parseFloat(m.volumeNum || m.volume_num || m.volume || '0'),
-      liquidity: parseFloat(m.liquidity || '0'),
-      spread: parseFloat(m.spread || '0'),
-    }));
+    if (!Array.isArray(data)) {
+      logger.warn('[PolymarketService] parseMarkets received non-array data');
+      return [];
+    }
+
+    return data.map((m) => {
+      try {
+        return {
+          condition_id: m.conditionId || m.condition_id,
+          question_id: m.questionId || m.question_id,
+          question: m.question || m.title || '',
+          description: m.description || '',
+          market_slug: m.slug || m.market_slug || '',
+          end_date_iso: m.endDate || m.end_date_iso || '',
+          game_start_time: m.gameStartTime || m.game_start_time,
+          tokens: this.parseTokens(m),
+          active: m.active ?? true,
+          closed: m.closed ?? false,
+          archived: m.archived ?? false,
+          accepting_orders: m.acceptingOrders ?? m.accepting_orders ?? true,
+          accepting_order_timestamp: m.acceptingOrderTimestamp || m.accepting_order_timestamp,
+          minimum_order_size: parseFloat(m.minimumOrderSize || m.minimum_order_size || '1'),
+          minimum_tick_size: parseFloat(m.minimumTickSize || m.minimum_tick_size || '0.01'),
+          neg_risk: m.negRisk ?? m.neg_risk ?? false,
+          volume: parseFloat(m.volume || '0'),
+          volume_num: parseFloat(m.volumeNum || m.volume_num || m.volume || '0'),
+          liquidity: parseFloat(m.liquidity || '0'),
+          spread: parseFloat(m.spread || '0'),
+        };
+      } catch (err) {
+        logger.error({ error: err, market: m }, '[PolymarketService] Failed to parse market');
+        return null;
+      }
+    }).filter(Boolean) as PolymarketMarket[];
   }
 }
