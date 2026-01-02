@@ -1,7 +1,8 @@
 /**
  * Market Details Action
  *
- * Get detailed information about a specific market.
+ * Get detailed information about a specific market with news,
+ * signals, and intelligence insights.
  */
 
 import type {
@@ -14,6 +15,10 @@ import type {
 } from '@elizaos/core';
 import { logger } from '@elizaos/core';
 import { PolymarketService } from '../services/polymarket';
+import { DataSourcesService } from '../services/data-sources';
+import { MarketIntelligenceService } from '../services/market-intelligence';
+import { SignalGeneratorService } from '../services/signal-generator';
+import { getCurrentETTime } from '../providers/timezone';
 
 /**
  * Sanitize text to prevent database encoding issues.
@@ -33,6 +38,25 @@ function sanitizeText(text: string): string {
     .replace(/[\u{1FA70}-\u{1FAFF}]/gu, '')
     .replace(/[^\x00-\x7F]/g, '')
     .trim();
+}
+
+/**
+ * Extract keywords from text for news matching.
+ */
+function extractKeywords(text: string): string[] {
+  const stopWords = new Set([
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'will', 'be', 'been', 'being',
+    'have', 'has', 'had', 'do', 'does', 'did', 'to', 'of', 'in', 'for', 'on',
+    'with', 'at', 'by', 'from', 'or', 'and', 'as', 'if', 'but', 'not', 'that',
+    'this', 'it', 'its', 'what', 'which', 'who', 'when', 'where', 'why', 'how',
+    'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such',
+  ]);
+
+  return text.toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length > 2 && !stopWords.has(word))
+    .filter((word, index, self) => self.indexOf(word) === index);
 }
 
 export const marketDetailsAction: Action = {
@@ -75,6 +99,10 @@ export const marketDetailsAction: Action = {
   ): Promise<ActionResult> => {
     try {
       const service = runtime.getService<PolymarketService>('polymarket');
+      const dataSourcesService = runtime.getService<DataSourcesService>('data-sources');
+      const intelligenceService = runtime.getService<MarketIntelligenceService>('market-intelligence');
+      const signalService = runtime.getService<SignalGeneratorService>('signal-generator');
+
       if (!service) {
         const errorMsg = 'Polymarket service not available.';
         if (callback) {
@@ -116,7 +144,7 @@ export const marketDetailsAction: Action = {
       }
 
       if (callback) {
-        await callback({ text: `Looking up market: "${query}"...` });
+        await callback({ text: `Analyzing market: "${query}"...` });
       }
 
       // Search for the market
@@ -131,28 +159,48 @@ export const marketDetailsAction: Action = {
       }
 
       const market = markets[0];
+      const etTime = getCurrentETTime();
 
-      // Get order book for each token
-      const tokenDetails = await Promise.all(
-        market.tokens.map(async (token) => {
-          try {
-            const orderBook = await service.getOrderBook(token.token_id);
-            return {
-              ...token,
-              orderBook,
-            };
-          } catch {
-            return {
-              ...token,
-              orderBook: null,
-            };
-          }
+      // Gather market data, news, and signals in parallel
+      const [orderBooks, allNews, signals, opportunities] = await Promise.all([
+        // Get order book for each token
+        Promise.all(
+          market.tokens.map(async (token) => {
+            try {
+              const orderBook = await service.getOrderBook(token.token_id);
+              return { ...token, orderBook };
+            } catch {
+              return { ...token, orderBook: null };
+            }
+          })
+        ),
+        // Get related news
+        dataSourcesService?.getAllNews() || [],
+        // Get active signals for this market
+        signalService?.getSignalsByMarket(market.condition_id) || [],
+        // Get opportunities for this market
+        intelligenceService?.getOpportunities() || [],
+      ]);
+
+      // Extract keywords for news filtering
+      const marketKeywords = extractKeywords(market.question);
+
+      // Find related news
+      const relatedNews = allNews
+        .filter((n) => {
+          const newsKeywords = extractKeywords(n.title + ' ' + n.summary);
+          return marketKeywords.some((mk) => newsKeywords.includes(mk));
         })
-      );
+        .slice(0, 5);
+
+      // Find opportunities for this market
+      const marketOpportunity = opportunities.find((o) => o.market.condition_id === market.condition_id);
+
+      const tokenDetails = orderBooks;
 
       // Format response - no emojis (can cause DB encoding issues)
-      const yesToken = tokenDetails.find(t => t.outcome.toLowerCase() === 'yes');
-      const noToken = tokenDetails.find(t => t.outcome.toLowerCase() === 'no');
+      const yesToken = tokenDetails.find((t) => t.outcome.toLowerCase() === 'yes');
+      const noToken = tokenDetails.find((t) => t.outcome.toLowerCase() === 'no');
 
       const endDate = new Date(market.end_date_iso);
       const now = new Date();
@@ -164,25 +212,71 @@ export const marketDetailsAction: Action = {
       const question = sanitizeText(market.question);
       const description = market.description ? sanitizeText(market.description) : '';
 
-      let responseText = `${question}
+      // Format volume
+      const volumeFormatted =
+        market.volume_num >= 1_000_000
+          ? `$${(market.volume_num / 1_000_000).toFixed(1)}M`
+          : `$${(market.volume_num / 1_000).toFixed(0)}K`;
 
-Current Odds:
-- Yes: ${((yesToken?.price ?? 0.5) * 100).toFixed(1)}%${yesToken?.orderBook ? ` (spread: ${(yesToken.orderBook.spread * 100).toFixed(2)}%)` : ''}
-- No: ${((noToken?.price ?? 0.5) * 100).toFixed(1)}%${noToken?.orderBook ? ` (spread: ${(noToken.orderBook.spread * 100).toFixed(2)}%)` : ''}
+      const liquidityFormatted =
+        market.liquidity >= 1_000_000
+          ? `$${(market.liquidity / 1_000_000).toFixed(1)}M`
+          : `$${(market.liquidity / 1_000).toFixed(0)}K`;
 
-Market Stats:
-- Volume: $${market.volume_num.toLocaleString()}
-- Liquidity: $${market.liquidity.toLocaleString()}
+      let responseText = `MARKET ANALYSIS: ${question}
+${'='.repeat(Math.min(60, question.length))}
+Analysis Date: ${etTime.dateStr} ${etTime.timeStr} ET
+
+PRICING:
+- YES: ${((yesToken?.price ?? 0.5) * 100).toFixed(1)}%${yesToken?.orderBook ? ` (spread: ${(yesToken.orderBook.spread * 100).toFixed(2)}%)` : ''}
+- NO: ${((noToken?.price ?? 0.5) * 100).toFixed(1)}%${noToken?.orderBook ? ` (spread: ${(noToken.orderBook.spread * 100).toFixed(2)}%)` : ''}
+
+MARKET METRICS:
+- Volume: ${volumeFormatted}
+- Liquidity: ${liquidityFormatted}
 - Status: ${statusText}
-- Accepting Orders: ${ordersText}
+- Orders: ${ordersText}
 
-Timeline:
+TIMELINE:
 - End Date: ${endDate.toLocaleDateString()}
-- Days Remaining: ${daysRemaining > 0 ? daysRemaining : 'Ended'}`;
+- Time Remaining: ${daysRemaining > 0 ? `${daysRemaining} days` : 'Ended'}`;
+
+      // Add signals section if available
+      if (signals.length > 0) {
+        responseText += `\n\nACTIVE SIGNALS (${signals.length}):`;
+        for (const signal of signals.slice(0, 3)) {
+          responseText += `\n- ${signal.direction} @ ${signal.confidence}% confidence | Edge: ${signal.edge.toFixed(1)}%`;
+          if (signal.reasoning) {
+            responseText += `\n  Thesis: ${sanitizeText(signal.reasoning.slice(0, 100))}...`;
+          }
+        }
+      }
+
+      // Add opportunity assessment
+      if (marketOpportunity) {
+        responseText += `\n\nOPPORTUNITY SCORE: ${marketOpportunity.score}/100`;
+        responseText += `\nDirection: ${marketOpportunity.direction.toUpperCase()}`;
+        responseText += `\nConfidence: ${marketOpportunity.confidence}%`;
+        if (marketOpportunity.reasoning) {
+          responseText += `\nReasoning: ${sanitizeText(marketOpportunity.reasoning.slice(0, 150))}`;
+        }
+      }
+
+      // Add related news section
+      if (relatedNews.length > 0) {
+        responseText += `\n\nRELATED NEWS (${relatedNews.length}):`;
+        for (const news of relatedNews.slice(0, 3)) {
+          const sentiment = news.sentiment ? ` [${news.sentiment}]` : '';
+          responseText += `\n- [${news.source}] ${sanitizeText(news.title.slice(0, 70))}...${sentiment}`;
+        }
+      }
 
       if (description) {
-        responseText += `\n\nDescription:\n${description.slice(0, 500)}${description.length > 500 ? '...' : ''}`;
+        responseText += `\n\nDESCRIPTION:\n${description.slice(0, 300)}${description.length > 300 ? '...' : ''}`;
       }
+
+      // Add action hints
+      responseText += `\n\n---\nTo trade: "buy yes on ${market.question.slice(0, 30)}..." or "buy no..."`;
 
       if (callback) {
         await callback({
@@ -197,6 +291,9 @@ Timeline:
         data: {
           market,
           tokens: tokenDetails,
+          signals,
+          relatedNews,
+          opportunity: marketOpportunity,
         },
       };
     } catch (error) {

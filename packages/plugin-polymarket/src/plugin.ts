@@ -49,6 +49,7 @@ import {
   viewPositionAction,
   marketDetailsAction,
   researchMarketsAction,
+  postAnalysisAction,
 } from './actions';
 
 // Providers
@@ -165,6 +166,7 @@ export const polymarketPlugin: Plugin = {
     viewPositionAction,
     marketDetailsAction,
     researchMarketsAction,
+    postAnalysisAction,
   ],
 
   // Providers for context injection
