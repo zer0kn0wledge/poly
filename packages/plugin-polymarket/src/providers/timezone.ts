@@ -101,6 +101,7 @@ export function isMarketExpired(endDateStr: string | undefined): boolean {
 
 /**
  * Check if a market is likely from a past year (e.g., "2025" in question when current year is 2026)
+ * Only filters if the market ONLY mentions past years (not if it also mentions current/future years)
  */
 export function detectPastYearMarket(
   question: string,
@@ -112,15 +113,18 @@ export function detectPastYearMarket(
 
   if (!matches) return { isPast: false };
 
-  // Check all mentioned years
-  for (const yearStr of matches) {
-    const mentionedYear = parseInt(yearStr);
-    if (mentionedYear < currentYear) {
-      return { isPast: true, mentionedYear };
-    }
+  // Get unique years mentioned
+  const uniqueYears = [...new Set(matches.map(y => parseInt(y)))];
+
+  // Check if ANY year is current or future - if so, market is still valid
+  const hasCurrentOrFutureYear = uniqueYears.some(year => year >= currentYear);
+  if (hasCurrentOrFutureYear) {
+    return { isPast: false };
   }
 
-  return { isPast: false };
+  // All mentioned years are in the past - this market is likely resolved
+  const maxPastYear = Math.max(...uniqueYears);
+  return { isPast: true, mentionedYear: maxPastYear };
 }
 
 /**

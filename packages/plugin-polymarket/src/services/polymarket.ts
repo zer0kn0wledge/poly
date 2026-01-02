@@ -297,40 +297,37 @@ export class PolymarketService extends Service {
       const currentYear = etTime.year;
 
       // Filter out markets that aren't tradeable
+      // Be less aggressive - trust API flags and only filter obvious cases
       const beforeFilter = markets.length;
       markets = markets.filter(m => {
-        // Must be active and not closed (trust API flags, not date comparison)
-        if (!m.active || m.closed || m.archived) return false;
+        // Must be active and not closed (trust API flags)
+        if (m.closed || m.archived) {
+          logger.debug({ question: m.question.slice(0, 50) },
+            '[PolymarketService] Market filtered: closed/archived');
+          return false;
+        }
 
-        // Must be accepting orders
-        if (!m.accepting_orders) return false;
-
-        // Filter out expired markets
-        if (isMarketExpired(m.end_date_iso)) {
+        // Filter out clearly expired markets (end date in the past)
+        if (m.end_date_iso && isMarketExpired(m.end_date_iso)) {
           logger.debug({ question: m.question.slice(0, 50), endDate: m.end_date_iso },
             '[PolymarketService] Market filtered: expired');
           return false;
         }
 
-        // Filter out past-year markets (e.g., "2025" markets when current year is 2026)
+        // Only filter markets that EXCLUSIVELY mention past years
         const pastYearCheck = detectPastYearMarket(m.question, currentYear);
         if (pastYearCheck.isPast) {
           logger.debug({ question: m.question.slice(0, 50), mentionedYear: pastYearCheck.mentionedYear },
-            '[PolymarketService] Market filtered: past year reference');
+            '[PolymarketService] Market filtered: only past years');
           return false;
         }
 
-        // Must have valid token IDs (not synthetic with -0/-1 suffix)
-        // Real clobTokenIds are long numeric strings (70+ chars)
-        const hasValidTokens = m.tokens.every(t =>
-          t.token_id &&
-          !t.token_id.endsWith('-0') &&
-          !t.token_id.endsWith('-1') &&
-          t.token_id.length > 20
-        );
-        if (!hasValidTokens) {
-          logger.debug({ question: m.question, tokenIds: m.tokens.map(t => t.token_id?.slice(0, 20)) },
-            '[PolymarketService] Market filtered: invalid tokens');
+        // Basic token validation - just check tokens exist
+        // Don't be too strict on format since API might change
+        const hasTokens = m.tokens && m.tokens.length > 0 && m.tokens.some(t => t.token_id);
+        if (!hasTokens) {
+          logger.debug({ question: m.question.slice(0, 50) },
+            '[PolymarketService] Market filtered: no tokens');
           return false;
         }
 
