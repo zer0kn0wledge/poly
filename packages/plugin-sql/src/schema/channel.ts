@@ -9,8 +9,8 @@ export const channelTable = pgTable('channels', {
     .references(() => messageServerTable.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
   type: text('type').notNull(), // Store ChannelType enum values as text
-  sourceType: text('source_type'),
-  sourceId: text('source_id'),
+  sourceType: text('source_type').default(''),
+  sourceId: text('source_id').default(''),
   topic: text('topic'),
   metadata: jsonb('metadata'),
   // Note: server_id is added dynamically by RLS setup, not defined in schema

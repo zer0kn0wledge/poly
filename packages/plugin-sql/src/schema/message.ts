@@ -13,8 +13,8 @@ export const messageTable = pgTable('central_messages', {
   inReplyToRootMessageId: text('in_reply_to_root_message_id').references(() => messageTable.id, {
     onDelete: 'set null',
   }),
-  sourceType: text('source_type'),
-  sourceId: text('source_id'),
+  sourceType: text('source_type').default(''),
+  sourceId: text('source_id').default(''),
   metadata: jsonb('metadata'),
   createdAt: timestamp('created_at', { mode: 'date' })
     .default(sql`CURRENT_TIMESTAMP`)
