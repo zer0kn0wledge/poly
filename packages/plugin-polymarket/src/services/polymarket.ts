@@ -166,61 +166,81 @@ export class PolymarketService extends Service {
   private async initializeCredentials(): Promise<void> {
     if (!this.client || !this.connectedWallet) return;
 
-    try {
-      // Try to derive existing API key or create a new one
-      const creds = await this.client.createOrDeriveApiKey();
-      this.credentials = {
-        apiKey: creds.apiKey,
-        apiSecret: creds.secret,
-        apiPassphrase: creds.passphrase,
-      };
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY_MS = 2000;
 
-      // Reinitialize client with credentials
-      this.client = new ClobClient(
-        POLYMARKET_HOST,
-        POLYGON_CHAIN_ID,
-        this.connectedWallet,
-        creds
-      );
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        logger.info({ attempt }, '[PolymarketService] Attempting to derive/create API key');
 
-      logger.info('[PolymarketService] API credentials initialized');
-    } catch (error) {
-      logger.error({ error }, '[PolymarketService] Failed to initialize API credentials');
+        // Try to derive existing API key or create a new one
+        const creds = await this.client.createOrDeriveApiKey();
+        this.credentials = {
+          apiKey: creds.apiKey,
+          apiSecret: creds.secret,
+          apiPassphrase: creds.passphrase,
+        };
+
+        // Reinitialize client with credentials
+        this.client = new ClobClient(
+          POLYMARKET_HOST,
+          POLYGON_CHAIN_ID,
+          this.connectedWallet,
+          creds
+        );
+
+        logger.info('[PolymarketService] API credentials initialized successfully');
+        return;
+      } catch (error: any) {
+        const errorMsg = error?.message || String(error);
+        logger.warn({ attempt, error: errorMsg }, '[PolymarketService] API key creation failed');
+
+        if (attempt < MAX_RETRIES) {
+          logger.info({ retryIn: RETRY_DELAY_MS }, '[PolymarketService] Retrying...');
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        } else {
+          logger.error('[PolymarketService] All API key creation attempts failed - running in read-only mode');
+        }
+      }
     }
   }
 
   /**
    * Ensure token allowances are set for USDC and conditional tokens.
    * This is required before placing any trades.
+   *
+   * Note: We skip getAllowances() check as it may not be available in all SDK versions.
+   * Instead, we attempt to set allowances and handle errors gracefully.
    */
   private async ensureAllowances(): Promise<void> {
     if (!this.client) return;
 
     try {
-      // Check current allowances
-      const allowances = await this.client.getAllowances();
+      // Note: getAllowances() is not available in all CLOB client versions
+      // Instead, we attempt to set allowances which is idempotent
+      // If already set, this will be a no-op or low gas transaction
 
-      const needsApproval = !allowances ||
-        !allowances.collateral ||
-        !allowances.conditional;
+      logger.info('[PolymarketService] Checking/setting token allowances...');
 
-      if (needsApproval) {
-        logger.info('[PolymarketService] Setting token allowances (one-time operation)...');
+      // Set max allowances for USDC and conditional tokens
+      // This requires on-chain transactions (gas fees apply on first run)
+      await this.client.setAllowances();
 
-        // Set max allowances for USDC and conditional tokens
-        // This requires on-chain transactions (gas fees apply)
-        await this.client.setAllowances();
+      logger.info('[PolymarketService] Token allowances verified/set successfully');
+      this.allowancesApproved = true;
+    } catch (error: any) {
+      const errorMsg = error?.message || String(error);
 
-        logger.info('[PolymarketService] Token allowances approved successfully');
-      } else {
-        logger.debug('[PolymarketService] Token allowances already set');
+      // Check if it's a "already approved" type error (which means allowances are set)
+      if (errorMsg.includes('already') || errorMsg.includes('allowance')) {
+        logger.debug('[PolymarketService] Allowances appear to already be set');
+        this.allowancesApproved = true;
+        return;
       }
 
-      this.allowancesApproved = true;
-    } catch (error) {
       // Don't throw - allowances might already be set or this is a read-only check
-      logger.warn({ error }, '[PolymarketService] Could not verify/set allowances - trading may fail');
-      // Still mark as approved to allow attempting trades
+      logger.warn({ error: errorMsg }, '[PolymarketService] Could not verify/set allowances - trading may fail');
+      // Still mark as approved to allow attempting trades (they will fail with clear error if not set)
       this.allowancesApproved = true;
     }
   }
@@ -357,6 +377,20 @@ export class PolymarketService extends Service {
               question: m.question.slice(0, 50),
               yesPrice: (yesPrice * 100).toFixed(1) + '%'
             }, '[PolymarketService] FILTERED: >95% skewed (awaiting resolution)');
+            return false;
+          }
+        }
+
+        // CRITICAL FIX: Client-side date validation
+        // Double-check end_date to filter any stale/past markets that slipped through
+        if (!skipDateFilter && m.end_date_iso) {
+          const endDate = new Date(m.end_date_iso);
+          const now = new Date();
+          if (endDate < now) {
+            logger.debug({
+              question: m.question.slice(0, 50),
+              endDate: m.end_date_iso
+            }, '[PolymarketService] FILTERED: past end_date');
             return false;
           }
         }

@@ -93,12 +93,30 @@ function detectPostType(text: string): { type: PostType; target?: string } {
 export const postAnalysisAction: Action = {
   name: 'POST_ANALYSIS',
   similes: [
+    // Direct posting commands
     'POST_TO_TWITTER',
     'TWEET_ANALYSIS',
     'SHARE_ANALYSIS',
     'TWITTER_UPDATE',
     'POST_UPDATE',
     'TWEET_MARKETS',
+    // Alternative phrasings
+    'SEND_TWEET',
+    'PUBLISH_TWEET',
+    'TWITTER_POST',
+    'MAKE_TWEET',
+    'WRITE_TWEET',
+    // Analysis sharing
+    'SHARE_ON_TWITTER',
+    'POST_MARKET_UPDATE',
+    'TWEET_UPDATE',
+    'SHARE_MARKETS',
+    // General posting capabilities
+    'CAN_YOU_TWEET',
+    'CAN_YOU_POST',
+    'POST_SOMETHING',
+    'TWEET_SOMETHING',
+    'SHARE_SOMETHING',
   ],
   description: 'Post market analysis or updates to Twitter on demand',
 

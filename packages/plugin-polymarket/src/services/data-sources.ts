@@ -465,14 +465,16 @@ export class DataSourcesService extends Service {
         return [];
       }
 
-      // CryptoPanic API v1 endpoint - same for all API keys
-      // Only auth_token is required, filter is optional
+      // CryptoPanic API v1 endpoint
+      // auth_token is required, public=true for free tier, filter is optional
       const params = new URLSearchParams({
         auth_token: this.cryptoPanicKey,
+        public: 'true', // Required for most API keys
       });
       if (filter) params.append('filter', filter);
 
-      const apiUrl = `https://cryptopanic.com/api/v1/posts/?${params}`;
+      // Note: Endpoint must NOT have trailing slash before query params
+      const apiUrl = `https://cryptopanic.com/api/v1/posts?${params}`;
       logger.debug({ url: apiUrl.replace(this.cryptoPanicKey, 'REDACTED') }, '[DataSources] Fetching CryptoPanic news');
 
       const response = await safeFetch(apiUrl);

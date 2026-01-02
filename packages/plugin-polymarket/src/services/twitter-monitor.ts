@@ -73,11 +73,21 @@ export interface Tweet {
 
 export interface TwitterAlert {
   tweet: Tweet;
-  alertType: 'breaking' | 'sentiment' | 'whale' | 'keyword';
+  alertType: 'breaking' | 'sentiment' | 'whale' | 'keyword' | 'mention';
   relevance: number;
   matchedKeywords: string[];
   inferredMarkets: string[];
   sentiment: 'bullish' | 'bearish' | 'neutral';
+}
+
+export interface Mention {
+  id: string;
+  text: string;
+  authorId: string;
+  authorUsername: string;
+  createdAt: Date;
+  conversationId?: string;
+  inReplyToUserId?: string;
 }
 
 // Keywords to monitor for each category
@@ -182,12 +192,18 @@ export class TwitterMonitorService extends Service {
   private accessTokenSecret: string = '';
 
   private alertBuffer: TwitterAlert[] = [];
+  private mentionBuffer: Mention[] = [];
   private lastSearchTime: Map<string, number> = new Map();
   private lastGlobalRequest: number = 0;
+  private lastMentionId: string = '';
+  private ownUserId: string = '';
+  private ownUsername: string = '';
   private readonly MAX_ALERTS = 500;
+  private readonly MAX_MENTIONS = 100;
   private readonly SEARCH_COOLDOWN = 60000; // 60 seconds between same searches
   private readonly GLOBAL_REQUEST_DELAY = 5000; // 5 seconds between ANY request
   private readonly MAX_REQUESTS_PER_CYCLE = 5; // Max requests per scan cycle
+  private mentionPollInterval: NodeJS.Timer | null = null;
 
   constructor() {
     super();
@@ -216,6 +232,161 @@ export class TwitterMonitorService extends Service {
       hasClientCredentials: !!(this.clientId && this.clientSecret),
       hasUserCredentials: !!(this.accessToken && this.accessTokenSecret),
     });
+
+    // Get our own user info for mention monitoring
+    if (this.bearerToken) {
+      await this.fetchOwnUserInfo(runtime);
+    }
+
+    // Start mention polling if we have the required credentials
+    if (this.ownUserId && this.bearerToken) {
+      this.startMentionPolling();
+    }
+  }
+
+  /**
+   * Fetch our own Twitter user info for mention monitoring
+   */
+  private async fetchOwnUserInfo(runtime: IAgentRuntime): Promise<void> {
+    try {
+      // Try to get username from config
+      this.ownUsername = runtime.getSetting('TWITTER_USERNAME') ||
+                         process.env.TWITTER_USERNAME || '';
+
+      if (!this.ownUsername) {
+        logger.warn('[TwitterMonitor] TWITTER_USERNAME not set - mention monitoring disabled');
+        return;
+      }
+
+      // Clean up username (remove @ if present)
+      this.ownUsername = this.ownUsername.replace(/^@/, '');
+
+      await this.enforceRateLimit();
+
+      const response = await safeFetch(
+        `https://api.twitter.com/2/users/by/username/${this.ownUsername}`,
+        {
+          headers: { Authorization: `Bearer ${this.bearerToken}` },
+        }
+      );
+
+      if (!response || !response.ok) {
+        logger.warn('[TwitterMonitor] Could not fetch own user info');
+        return;
+      }
+
+      const data = await response.json();
+      if (data.data?.id) {
+        this.ownUserId = data.data.id;
+        logger.info({ userId: this.ownUserId, username: this.ownUsername },
+          '[TwitterMonitor] Own user info fetched for mention monitoring');
+      }
+    } catch (error) {
+      logger.error({ error }, '[TwitterMonitor] Failed to fetch own user info');
+    }
+  }
+
+  /**
+   * Start polling for mentions
+   */
+  private startMentionPolling(): void {
+    // Poll every 2 minutes (respects rate limits)
+    const POLL_INTERVAL = 2 * 60 * 1000;
+
+    logger.info({ pollInterval: POLL_INTERVAL / 1000 + 's' },
+      '[TwitterMonitor] Starting mention polling');
+
+    this.mentionPollInterval = setInterval(async () => {
+      try {
+        await this.pollMentions();
+      } catch (error) {
+        logger.error({ error }, '[TwitterMonitor] Mention poll failed');
+      }
+    }, POLL_INTERVAL);
+
+    // Also do an initial poll
+    this.pollMentions().catch(err =>
+      logger.error({ err }, '[TwitterMonitor] Initial mention poll failed')
+    );
+  }
+
+  /**
+   * Poll for new mentions
+   */
+  async pollMentions(): Promise<Mention[]> {
+    if (!this.bearerToken || !this.ownUserId) {
+      return [];
+    }
+
+    await this.enforceRateLimit();
+
+    try {
+      const params = new URLSearchParams({
+        max_results: '20',
+        'tweet.fields': 'created_at,conversation_id,in_reply_to_user_id,author_id',
+        'user.fields': 'username',
+        expansions: 'author_id',
+      });
+
+      // Use since_id to only get new mentions
+      if (this.lastMentionId) {
+        params.set('since_id', this.lastMentionId);
+      }
+
+      const response = await safeFetch(
+        `https://api.twitter.com/2/users/${this.ownUserId}/mentions?${params}`,
+        {
+          headers: { Authorization: `Bearer ${this.bearerToken}` },
+        }
+      );
+
+      if (!response) {
+        return [];
+      }
+
+      if (!response.ok) {
+        const error = await response.text();
+        logger.warn({ status: response.status, error }, '[TwitterMonitor] Mention fetch failed');
+        return [];
+      }
+
+      const data = await response.json();
+
+      if (!data.data || data.data.length === 0) {
+        return [];
+      }
+
+      // Map users for lookup
+      const users = new Map<string, string>();
+      for (const user of data.includes?.users || []) {
+        users.set(user.id, user.username);
+      }
+
+      const newMentions: Mention[] = data.data.map((tweet: any) => ({
+        id: tweet.id,
+        text: tweet.text,
+        authorId: tweet.author_id,
+        authorUsername: users.get(tweet.author_id) || 'unknown',
+        createdAt: new Date(tweet.created_at),
+        conversationId: tweet.conversation_id,
+        inReplyToUserId: tweet.in_reply_to_user_id,
+      }));
+
+      // Update last mention ID to the newest
+      if (newMentions.length > 0) {
+        this.lastMentionId = newMentions[0].id;
+
+        // Add to buffer
+        this.mentionBuffer = [...newMentions, ...this.mentionBuffer].slice(0, this.MAX_MENTIONS);
+
+        logger.info({ count: newMentions.length }, '[TwitterMonitor] New mentions received');
+      }
+
+      return newMentions;
+    } catch (error) {
+      logger.error({ error }, '[TwitterMonitor] Poll mentions failed');
+      return [];
+    }
   }
 
   private async generateBearerToken(): Promise<void> {
@@ -247,7 +418,15 @@ export class TwitterMonitorService extends Service {
 
   override async stop(): Promise<void> {
     logger.info('[TwitterMonitor] Stopping Twitter monitor service');
+
+    // Stop mention polling
+    if (this.mentionPollInterval) {
+      clearInterval(this.mentionPollInterval);
+      this.mentionPollInterval = null;
+    }
+
     this.alertBuffer = [];
+    this.mentionBuffer = [];
     this.lastSearchTime.clear();
   }
 
@@ -593,5 +772,49 @@ export class TwitterMonitorService extends Service {
 
   getWatchAccounts(): typeof WATCH_ACCOUNTS {
     return WATCH_ACCOUNTS;
+  }
+
+  // ============= Mention Getters =============
+
+  /**
+   * Get recent mentions
+   */
+  getRecentMentions(minutes: number = 30): Mention[] {
+    const cutoff = Date.now() - minutes * 60 * 1000;
+    return this.mentionBuffer.filter((m) => m.createdAt.getTime() > cutoff);
+  }
+
+  /**
+   * Get all buffered mentions
+   */
+  getAllMentions(): Mention[] {
+    return [...this.mentionBuffer];
+  }
+
+  /**
+   * Get unprocessed mentions (for responding)
+   * Returns mentions that haven't been marked as processed
+   */
+  getUnprocessedMentions(): Mention[] {
+    return this.mentionBuffer.filter(m => {
+      // Filter out mentions older than 1 hour (stale)
+      const hourAgo = Date.now() - 60 * 60 * 1000;
+      return m.createdAt.getTime() > hourAgo;
+    });
+  }
+
+  /**
+   * Check if mention monitoring is active
+   */
+  isMentionMonitoringActive(): boolean {
+    return !!(this.ownUserId && this.bearerToken && this.mentionPollInterval);
+  }
+
+  /**
+   * Get own user info
+   */
+  getOwnUserInfo(): { userId: string; username: string } | null {
+    if (!this.ownUserId) return null;
+    return { userId: this.ownUserId, username: this.ownUsername };
   }
 }
