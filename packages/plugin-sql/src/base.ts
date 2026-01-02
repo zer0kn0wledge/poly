@@ -3536,22 +3536,45 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<any> {
     return this.withDatabase(async () => {
       const newId = data.messageId || (v4() as UUID);
       const now = new Date();
-      const messageToInsert = {
+
+      // Build message object, only including sourceType/sourceId if they have values
+      // This lets the database DEFAULT handle empty cases
+      const messageToInsert: Record<string, unknown> = {
         id: newId,
         channelId: data.channelId,
         authorId: data.authorId,
         content: data.content,
         rawMessage: data.rawMessage,
-        sourceType: data.sourceType ?? '',
-        sourceId: data.sourceId ?? '',
         metadata: data.metadata,
         inReplyToRootMessageId: data.inReplyToRootMessageId,
         createdAt: now,
         updatedAt: now,
       };
 
-      await this.db.insert(messageTable).values(messageToInsert);
-      return messageToInsert;
+      // Only include sourceType if provided and non-empty
+      if (data.sourceType && data.sourceType.trim() !== '') {
+        messageToInsert.sourceType = data.sourceType;
+      }
+
+      // Only include sourceId if provided and non-empty
+      if (data.sourceId && data.sourceId.trim() !== '') {
+        messageToInsert.sourceId = data.sourceId;
+      }
+
+      await this.db.insert(messageTable).values(messageToInsert as typeof messageToInsert);
+      return {
+        id: newId,
+        channelId: data.channelId,
+        authorId: data.authorId,
+        content: data.content,
+        rawMessage: data.rawMessage,
+        sourceType: data.sourceType,
+        sourceId: data.sourceId,
+        metadata: data.metadata,
+        inReplyToRootMessageId: data.inReplyToRootMessageId,
+        createdAt: now,
+        updatedAt: now,
+      };
     });
   }
 
