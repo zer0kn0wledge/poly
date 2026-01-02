@@ -27,6 +27,7 @@ import { TwitterService } from '../services/twitter';
 import type { PolymarketMarket } from '../types';
 import { getCurrentETTime, isMarketExpired, detectPastYearMarket, getRelativeTimeContext } from '../providers/timezone';
 import { newsProvider } from '../providers/news';
+import { StrategyLearningService, type DataSignalRecord } from '../services/strategy-learning';
 
 // Type for IPostService (avoid direct import to keep plugin standalone)
 interface PostContent {
@@ -361,6 +362,7 @@ async function handler(
 ): Promise<void> {
   const polymarketService = runtime.getService<PolymarketService>('polymarket');
   const signalGenerator = runtime.getService<SignalGeneratorService>('signal-generator');
+  const strategyLearning = runtime.getService<StrategyLearningService>('strategy-learning');
 
   if (!polymarketService || polymarketService.isReadOnly()) {
     logger.debug('[TradingEvaluator] Polymarket service not available or read-only');
@@ -448,6 +450,52 @@ async function handler(
       if (signalGenerator) {
         const yesPrice = signal.market.tokens.find((t) => t.outcome.toLowerCase() === 'yes')?.price || 0.5;
         signalGenerator.recordSignalEntry(signal, yesPrice);
+      }
+
+      // Record trade in strategy learning service for long-term performance tracking
+      if (strategyLearning) {
+        const yesPrice = signal.market.tokens.find((t) => t.outcome.toLowerCase() === 'yes')?.price || 0.5;
+        const entryPrice = signal.direction === 'BUY_YES' ? yesPrice : (1 - yesPrice);
+
+        // Convert supporting data to DataSignalRecord format
+        const dataSignals: DataSignalRecord[] = [
+          ...signal.supportingData.news.map((n) => ({
+            source: n.source || 'News',
+            type: 'news' as const,
+            signal: n.title,
+            sentiment: (n.sentiment === 'positive' ? 'bullish' : n.sentiment === 'negative' ? 'bearish' : 'neutral') as 'bullish' | 'bearish' | 'neutral',
+            strength: n.relevanceScore || 50,
+            timestamp: n.publishedAt,
+          })),
+          ...signal.supportingData.tweets.map((t) => ({
+            source: `@${t.tweet.authorUsername}`,
+            type: 'social' as const,
+            signal: t.tweet.text.slice(0, 200),
+            sentiment: t.sentiment as 'bullish' | 'bearish' | 'neutral',
+            strength: Math.min(100, Math.log10(t.tweet.authorFollowers + 1) * 20),
+            timestamp: t.tweet.createdAt,
+          })),
+          ...signal.supportingData.priceSignals.map((p) => ({
+            source: p.source,
+            type: 'price' as const,
+            signal: p.summary,
+            sentiment: p.direction as 'bullish' | 'bearish' | 'neutral',
+            strength: p.strength,
+            timestamp: p.timestamp,
+          })),
+        ];
+
+        strategyLearning.recordTradeEntry({
+          marketId: signal.market.condition_id,
+          marketQuestion: signal.market.question,
+          direction: signal.direction as 'BUY_YES' | 'BUY_NO',
+          entryPrice,
+          size: suggestedSize,
+          dataSignals,
+          reasoning: signal.reasoning,
+        });
+
+        logger.info('[TradingEvaluator] Trade recorded in strategy learning service');
       }
 
       // Post trade notification to Twitter
