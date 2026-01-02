@@ -65,4 +65,6 @@ ENV NODE_ENV=production
 EXPOSE 3000
 EXPOSE 50000-50100/udp
 
-CMD ["bun", "run", "start"]
+# Start from the polymarket plugin directory to load Zeracle character
+WORKDIR /app/packages/plugin-polymarket
+CMD ["bun", "../cli/dist/index.js", "start"]
