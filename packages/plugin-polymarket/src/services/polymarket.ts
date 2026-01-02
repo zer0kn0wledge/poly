@@ -244,26 +244,24 @@ export class PolymarketService extends Service {
       // Filter out markets that aren't tradeable
       const beforeFilter = markets.length;
       markets = markets.filter(m => {
-        // Must be active and not closed
+        // Must be active and not closed (trust API flags, not date comparison)
         if (!m.active || m.closed || m.archived) return false;
 
         // Must be accepting orders
         if (!m.accepting_orders) return false;
 
         // Must have valid token IDs (not synthetic with -0/-1 suffix)
-        // Real clobTokenIds are long numeric strings (50+ chars)
+        // Real clobTokenIds are long numeric strings (70+ chars)
         const hasValidTokens = m.tokens.every(t =>
           t.token_id &&
           !t.token_id.endsWith('-0') &&
           !t.token_id.endsWith('-1') &&
-          t.token_id.length > 20  // Real token IDs are 70+ chars
+          t.token_id.length > 20
         );
-        if (!hasValidTokens) return false;
-
-        // Filter out expired markets
-        if (m.end_date_iso) {
-          const endDate = new Date(m.end_date_iso);
-          if (endDate < new Date()) return false;
+        if (!hasValidTokens) {
+          logger.debug({ question: m.question, tokenIds: m.tokens.map(t => t.token_id?.slice(0, 20)) },
+            '[PolymarketService] Market filtered: invalid tokens');
+          return false;
         }
 
         return true;
