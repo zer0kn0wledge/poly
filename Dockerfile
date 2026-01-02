@@ -55,6 +55,7 @@ COPY --from=builder /app/turbo.json ./
 COPY --from=builder /app/tsconfig.json ./
 COPY --from=builder /app/lerna.json ./
 COPY --from=builder /app/renovate.json ./
+COPY --from=builder /app/build-utils.ts ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/scripts ./scripts
