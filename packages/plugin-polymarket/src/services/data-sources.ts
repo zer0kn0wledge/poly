@@ -2,6 +2,7 @@
  * Data Sources Service
  *
  * Aggregates multiple data APIs for market intelligence:
+ * - Tavily (real-time web search)
  * - CryptoPanic (crypto news)
  * - CoinGecko (crypto prices)
  * - DeFiLlama (DeFi data)
@@ -113,13 +114,28 @@ export interface TwitterSignal {
 
 export interface MarketSignal {
   source: string;
-  type: 'news' | 'social' | 'price' | 'sports' | 'politics';
+  type: 'news' | 'social' | 'price' | 'sports' | 'politics' | 'web';
   strength: number; // 0-100
   direction: 'bullish' | 'bearish' | 'neutral';
   summary: string;
   relatedMarkets: string[];
   timestamp: Date;
   rawData: unknown;
+}
+
+export interface TavilySearchResult {
+  title: string;
+  url: string;
+  content: string;
+  score: number;
+  publishedDate?: string;
+}
+
+export interface TavilySearchResponse {
+  query: string;
+  results: TavilySearchResult[];
+  answer?: string;
+  followUpQuestions?: string[];
 }
 
 // ============= News Sources Config =============
@@ -207,6 +223,7 @@ export class DataSourcesService extends Service {
     return service;
   }
 
+  private tavilyApiKey: string;
   private cryptoPanicKey: string;
   private coinGeckoKey: string;
   private defiLlamaKey: string;
@@ -216,13 +233,16 @@ export class DataSourcesService extends Service {
 
   private newsCache: Map<string, { data: NewsItem[]; timestamp: number }> = new Map();
   private priceCache: Map<string, { data: CryptoPrice; timestamp: number }> = new Map();
+  private tavilyCache: Map<string, { data: TavilySearchResponse; timestamp: number }> = new Map();
   private signalBuffer: MarketSignal[] = [];
 
   private readonly CACHE_TTL = 60000; // 1 minute
+  private readonly TAVILY_CACHE_TTL = 300000; // 5 minutes for web search results
   private readonly MAX_SIGNALS = 1000;
 
   constructor() {
     super();
+    this.tavilyApiKey = process.env.TAVILY_API_KEY || '';
     this.cryptoPanicKey = process.env.CRYPTOPANIC_API_KEY || '';
     this.coinGeckoKey = process.env.COINGECKO_API_KEY || '';
     this.defiLlamaKey = process.env.DEFILLAMA_API_KEY || '';
@@ -235,12 +255,14 @@ export class DataSourcesService extends Service {
     logger.info('[DataSources] Initializing data sources service');
 
     // Load keys from runtime config if not in env
+    this.tavilyApiKey = this.tavilyApiKey || runtime.getSetting('TAVILY_API_KEY') || '';
     this.cryptoPanicKey = this.cryptoPanicKey || runtime.getSetting('CRYPTOPANIC_API_KEY') || '';
     this.coinGeckoKey = this.coinGeckoKey || runtime.getSetting('COINGECKO_API_KEY') || '';
     this.defiLlamaKey = this.defiLlamaKey || runtime.getSetting('DEFILLAMA_API_KEY') || '';
     this.sportMonksKey = this.sportMonksKey || runtime.getSetting('SPORTMONKS_API_KEY') || '';
 
     logger.info('[DataSources] Available data sources:', {
+      tavily: !!this.tavilyApiKey,
       cryptoPanic: !!this.cryptoPanicKey,
       coinGecko: !!this.coinGeckoKey,
       defiLlama: !!this.defiLlamaKey,
@@ -253,7 +275,178 @@ export class DataSourcesService extends Service {
     logger.info('[DataSources] Stopping data sources service');
     this.newsCache.clear();
     this.priceCache.clear();
+    this.tavilyCache.clear();
     this.signalBuffer = [];
+  }
+
+  // ============= Tavily Web Search Integration =============
+
+  /**
+   * Search the web using Tavily for real-time context
+   * @param query Search query
+   * @param options Search options
+   */
+  async searchWeb(
+    query: string,
+    options: {
+      searchDepth?: 'basic' | 'advanced';
+      includeAnswer?: boolean;
+      maxResults?: number;
+      includeDomains?: string[];
+      excludeDomains?: string[];
+    } = {}
+  ): Promise<TavilySearchResponse | null> {
+    if (!this.tavilyApiKey) {
+      logger.debug('[DataSources] Tavily API key not configured');
+      return null;
+    }
+
+    // Check cache
+    const cacheKey = `tavily-${query}-${JSON.stringify(options)}`;
+    const cached = this.tavilyCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.TAVILY_CACHE_TTL) {
+      return cached.data;
+    }
+
+    try {
+      const response = await safeFetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          api_key: this.tavilyApiKey,
+          query,
+          search_depth: options.searchDepth || 'basic',
+          include_answer: options.includeAnswer ?? true,
+          max_results: options.maxResults || 10,
+          include_domains: options.includeDomains || [],
+          exclude_domains: options.excludeDomains || [],
+        }),
+      });
+
+      if (!response || !response.ok) {
+        logger.warn({ status: response?.status }, '[DataSources] Tavily search failed');
+        return null;
+      }
+
+      const data = await response.json();
+
+      const result: TavilySearchResponse = {
+        query,
+        results: (data.results || []).map((r: any) => ({
+          title: r.title,
+          url: r.url,
+          content: r.content,
+          score: r.score || 0,
+          publishedDate: r.published_date,
+        })),
+        answer: data.answer,
+        followUpQuestions: data.follow_up_questions,
+      };
+
+      this.tavilyCache.set(cacheKey, { data: result, timestamp: Date.now() });
+      return result;
+    } catch (error) {
+      logger.error({ error }, '[DataSources] Tavily search error');
+      return null;
+    }
+  }
+
+  /**
+   * Search for real-time context about a specific market topic
+   * Automatically selects relevant domains based on topic category
+   */
+  async getMarketContext(
+    topic: string,
+    category: 'crypto' | 'politics' | 'sports' | 'economy' | 'geopolitics' | 'tech' | 'general' = 'general'
+  ): Promise<{
+    summary: string;
+    sources: TavilySearchResult[];
+    sentiment: 'bullish' | 'bearish' | 'neutral';
+    confidence: number;
+  } | null> {
+    // Select domains based on category
+    const domainsByCategory: Record<string, string[]> = {
+      crypto: ['coindesk.com', 'cointelegraph.com', 'theblock.co', 'decrypt.co', 'bloomberg.com'],
+      politics: ['politico.com', 'thehill.com', 'reuters.com', 'apnews.com', 'bbc.com'],
+      sports: ['espn.com', 'bleacherreport.com', 'theathletic.com', 'cbssports.com'],
+      economy: ['bloomberg.com', 'wsj.com', 'ft.com', 'cnbc.com', 'reuters.com'],
+      geopolitics: ['foreignaffairs.com', 'reuters.com', 'bbc.com', 'aljazeera.com'],
+      tech: ['techcrunch.com', 'theverge.com', 'wired.com', 'arstechnica.com'],
+      general: [],
+    };
+
+    const includeDomains = domainsByCategory[category] || [];
+
+    const result = await this.searchWeb(topic, {
+      searchDepth: 'advanced',
+      includeAnswer: true,
+      maxResults: 8,
+      includeDomains: includeDomains.length > 0 ? includeDomains : undefined,
+    });
+
+    if (!result || result.results.length === 0) {
+      return null;
+    }
+
+    // Analyze sentiment from content
+    const sentiment = this.analyzeSentimentFromContent(result.results.map(r => r.content).join(' '));
+
+    return {
+      summary: result.answer || result.results[0].content.slice(0, 500),
+      sources: result.results,
+      sentiment: sentiment.direction,
+      confidence: sentiment.confidence,
+    };
+  }
+
+  /**
+   * Simple sentiment analysis from text content
+   */
+  private analyzeSentimentFromContent(text: string): { direction: 'bullish' | 'bearish' | 'neutral'; confidence: number } {
+    const lowerText = text.toLowerCase();
+
+    // Bullish keywords
+    const bullishKeywords = [
+      'surge', 'rally', 'gain', 'rise', 'up', 'bullish', 'positive', 'growth',
+      'breakthrough', 'success', 'win', 'winning', 'leading', 'ahead',
+      'optimistic', 'strong', 'momentum', 'outperform', 'beat', 'exceed',
+    ];
+
+    // Bearish keywords
+    const bearishKeywords = [
+      'crash', 'plunge', 'drop', 'fall', 'down', 'bearish', 'negative', 'decline',
+      'fail', 'failure', 'lose', 'losing', 'behind', 'trailing',
+      'pessimistic', 'weak', 'slowdown', 'underperform', 'miss', 'concern',
+    ];
+
+    let bullishScore = 0;
+    let bearishScore = 0;
+
+    for (const keyword of bullishKeywords) {
+      const matches = (lowerText.match(new RegExp(`\\b${keyword}\\b`, 'g')) || []).length;
+      bullishScore += matches;
+    }
+
+    for (const keyword of bearishKeywords) {
+      const matches = (lowerText.match(new RegExp(`\\b${keyword}\\b`, 'g')) || []).length;
+      bearishScore += matches;
+    }
+
+    const totalScore = bullishScore + bearishScore;
+    if (totalScore === 0) {
+      return { direction: 'neutral', confidence: 50 };
+    }
+
+    const ratio = bullishScore / totalScore;
+    if (ratio > 0.6) {
+      return { direction: 'bullish', confidence: Math.min(90, 50 + ratio * 50) };
+    } else if (ratio < 0.4) {
+      return { direction: 'bearish', confidence: Math.min(90, 50 + (1 - ratio) * 50) };
+    }
+
+    return { direction: 'neutral', confidence: 60 };
   }
 
   // ============= CryptoPanic Integration =============
@@ -646,6 +839,10 @@ export class DataSourcesService extends Service {
   async getMarketSignals(): Promise<MarketSignal[]> {
     const signals: MarketSignal[] = [];
 
+    // Tavily web search signals for trending topics
+    const tavilySignals = await this.getTavilyMarketSignals();
+    signals.push(...tavilySignals);
+
     // Crypto signals
     const cryptoNews = await this.getCryptoNews('hot');
     for (const news of cryptoNews.slice(0, 10)) {
@@ -711,6 +908,63 @@ export class DataSourcesService extends Service {
     // Store in buffer
     this.signalBuffer = [...signals, ...this.signalBuffer].slice(0, this.MAX_SIGNALS);
 
+    return signals;
+  }
+
+  /**
+   * Get market signals from Tavily web search
+   * Searches for breaking news on trending prediction market topics
+   */
+  private async getTavilyMarketSignals(): Promise<MarketSignal[]> {
+    if (!this.tavilyApiKey) {
+      return [];
+    }
+
+    const signals: MarketSignal[] = [];
+
+    // Key topics to search for prediction market relevance
+    const trendingQueries = [
+      { query: 'Bitcoin price prediction latest news', category: 'crypto' },
+      { query: 'US election 2024 latest polls', category: 'politics' },
+      { query: 'Federal Reserve interest rate decision', category: 'economy' },
+      { query: 'breaking news prediction markets', category: 'general' },
+    ];
+
+    // Run searches in parallel for efficiency
+    const searchPromises = trendingQueries.map(async ({ query, category }) => {
+      try {
+        const context = await this.getMarketContext(query, category as any);
+        if (context && context.sources.length > 0) {
+          return {
+            source: 'Tavily',
+            type: 'web' as const,
+            strength: context.confidence,
+            direction: context.sentiment,
+            summary: context.summary.slice(0, 300),
+            relatedMarkets: this.inferRelatedMarkets(context.summary, category),
+            timestamp: new Date(),
+            rawData: {
+              query,
+              category,
+              sources: context.sources.slice(0, 3).map(s => ({ title: s.title, url: s.url })),
+            },
+          };
+        }
+        return null;
+      } catch (error) {
+        logger.debug({ error, query }, '[DataSources] Tavily search failed for query');
+        return null;
+      }
+    });
+
+    const results = await Promise.all(searchPromises);
+    for (const result of results) {
+      if (result) {
+        signals.push(result);
+      }
+    }
+
+    logger.debug({ count: signals.length }, '[DataSources] Tavily signals generated');
     return signals;
   }
 

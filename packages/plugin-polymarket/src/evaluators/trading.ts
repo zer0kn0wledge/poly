@@ -21,13 +21,14 @@ import type {
 } from '@elizaos/core';
 import { logger, ServiceType } from '@elizaos/core';
 import { PolymarketService } from '../services/polymarket';
-import { SignalGeneratorService, type TradingSignal } from '../services/signal-generator';
+import { SignalGeneratorService, type TradingSignal, type SignalFactors } from '../services/signal-generator';
 import { LLMService } from '../services/llm';
 import { TwitterService } from '../services/twitter';
 import type { PolymarketMarket } from '../types';
 import { getCurrentETTime, isMarketExpired, detectPastYearMarket, getRelativeTimeContext } from '../providers/timezone';
 import { newsProvider } from '../providers/news';
 import { StrategyLearningService, type DataSignalRecord } from '../services/strategy-learning';
+import { DataSourcesService } from '../services/data-sources';
 
 // Type for IPostService (avoid direct import to keep plugin standalone)
 interface PostContent {
@@ -43,6 +44,8 @@ interface IPostServiceLike extends Service {
 const LAST_ANALYSIS_KEY = 'polymarket-last-analysis';
 const DEFAULT_ANALYSIS_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_MIN_CONFIDENCE = 75;
+const DEFAULT_MIN_COMPOSITE_SCORE = 50;
+const DEFAULT_MIN_CONSENSUS = 55;
 
 /**
  * Get configuration values from environment
@@ -52,7 +55,35 @@ function getConfig() {
     autoTradeEnabled: process.env.POLYMARKET_AUTO_TRADE === 'true' || process.env.POLYMARKET_AUTO_TRADE === '1',
     analysisIntervalMs: parseInt(process.env.POLYMARKET_ANALYSIS_INTERVAL || '') || DEFAULT_ANALYSIS_INTERVAL_MS,
     minConfidence: parseInt(process.env.POLYMARKET_MIN_CONFIDENCE || '') || DEFAULT_MIN_CONFIDENCE,
+    minCompositeScore: parseInt(process.env.POLYMARKET_MIN_COMPOSITE || '') || DEFAULT_MIN_COMPOSITE_SCORE,
+    minConsensus: parseInt(process.env.POLYMARKET_MIN_CONSENSUS || '') || DEFAULT_MIN_CONSENSUS,
+    maxConcurrentTrades: parseInt(process.env.POLYMARKET_MAX_CONCURRENT || '') || 3,
+    kellyFraction: parseFloat(process.env.POLYMARKET_KELLY_FRACTION || '') || 0.25, // Fractional Kelly
   };
+}
+
+/**
+ * Decision pipeline stages
+ */
+enum PipelineStage {
+  PRE_SCREEN = 'PRE_SCREEN',
+  FACTOR_VALIDATION = 'FACTOR_VALIDATION',
+  RISK_ASSESSMENT = 'RISK_ASSESSMENT',
+  SIZE_CALCULATION = 'SIZE_CALCULATION',
+  FINAL_APPROVAL = 'FINAL_APPROVAL',
+}
+
+/**
+ * Pipeline decision result
+ */
+interface PipelineDecision {
+  signal: TradingSignal;
+  stage: PipelineStage;
+  approved: boolean;
+  reason: string;
+  adjustedSize?: number;
+  riskScore?: number;
+  kellySize?: number;
 }
 
 interface MarketOpportunity {
@@ -61,6 +92,272 @@ interface MarketOpportunity {
   confidence: number;
   reasoning: string;
   suggestedSize: number;
+  factors?: SignalFactors;
+}
+
+// ============= Decision Pipeline Functions =============
+
+/**
+ * Stage 1: Pre-screen signals for basic quality
+ */
+function preScreenSignal(signal: TradingSignal, config: ReturnType<typeof getConfig>): PipelineDecision {
+  // Check minimum confidence
+  if (signal.confidence < config.minConfidence) {
+    return {
+      signal,
+      stage: PipelineStage.PRE_SCREEN,
+      approved: false,
+      reason: `Confidence ${signal.confidence}% below minimum ${config.minConfidence}%`,
+    };
+  }
+
+  // Check minimum edge
+  if (Math.abs(signal.edge) < 10) {
+    return {
+      signal,
+      stage: PipelineStage.PRE_SCREEN,
+      approved: false,
+      reason: `Edge ${signal.edge}% below minimum 10%`,
+    };
+  }
+
+  // Check supporting data exists
+  const totalData = (signal.supportingData.news?.length || 0) +
+                   (signal.supportingData.tweets?.length || 0) +
+                   (signal.supportingData.priceSignals?.length || 0) +
+                   (signal.supportingData.webSignals?.length || 0);
+
+  if (totalData < 2) {
+    return {
+      signal,
+      stage: PipelineStage.PRE_SCREEN,
+      approved: false,
+      reason: `Insufficient supporting data (${totalData} sources)`,
+    };
+  }
+
+  return {
+    signal,
+    stage: PipelineStage.PRE_SCREEN,
+    approved: true,
+    reason: 'Pre-screen passed',
+  };
+}
+
+/**
+ * Stage 2: Validate multi-factor scores
+ */
+function validateFactors(signal: TradingSignal, config: ReturnType<typeof getConfig>): PipelineDecision {
+  const factors = signal.factors;
+
+  if (!factors) {
+    // No factors available - use legacy validation
+    return {
+      signal,
+      stage: PipelineStage.FACTOR_VALIDATION,
+      approved: true,
+      reason: 'Legacy signal without factors - proceeding with caution',
+    };
+  }
+
+  // Check composite score
+  if (factors.compositeScore < config.minCompositeScore) {
+    return {
+      signal,
+      stage: PipelineStage.FACTOR_VALIDATION,
+      approved: false,
+      reason: `Composite score ${factors.compositeScore} below minimum ${config.minCompositeScore}`,
+    };
+  }
+
+  // Check consensus
+  if (factors.consensusScore < config.minConsensus) {
+    return {
+      signal,
+      stage: PipelineStage.FACTOR_VALIDATION,
+      approved: false,
+      reason: `Consensus score ${factors.consensusScore} below minimum ${config.minConsensus} - mixed signals`,
+    };
+  }
+
+  // Check time decay - stale signals are risky
+  if (factors.timeDecay < 0.5) {
+    return {
+      signal,
+      stage: PipelineStage.FACTOR_VALIDATION,
+      approved: false,
+      reason: `Signal freshness ${(factors.timeDecay * 100).toFixed(0)}% too low - data is stale`,
+    };
+  }
+
+  return {
+    signal,
+    stage: PipelineStage.FACTOR_VALIDATION,
+    approved: true,
+    reason: `Factors validated: composite=${factors.compositeScore}, consensus=${factors.consensusScore}`,
+  };
+}
+
+/**
+ * Stage 3: Assess risk based on market conditions
+ */
+function assessRisk(signal: TradingSignal, portfolio: { totalValue: number; positions: any[] }): PipelineDecision {
+  const factors = signal.factors;
+  let riskScore = 50; // Base risk
+
+  // Adjust risk based on volume/liquidity
+  if (factors) {
+    if (factors.volumeScore < 50) {
+      riskScore += 20; // Low liquidity = higher risk
+    } else if (factors.volumeScore > 80) {
+      riskScore -= 10; // High liquidity = lower risk
+    }
+
+    // Consensus affects risk
+    if (factors.consensusScore > 80) {
+      riskScore -= 15; // High consensus = lower risk
+    } else if (factors.consensusScore < 60) {
+      riskScore += 15; // Low consensus = higher risk
+    }
+  }
+
+  // Market spread affects risk
+  const spread = signal.market.spread || 0;
+  if (spread > 0.05) {
+    riskScore += 15; // Wide spread = harder to exit
+  }
+
+  // Portfolio concentration risk
+  const existingPosition = portfolio.positions.find(p =>
+    p.market.condition_id === signal.market.condition_id
+  );
+  if (existingPosition) {
+    riskScore += 25; // Already have position = concentration risk
+  }
+
+  // High risk threshold
+  if (riskScore > 75) {
+    return {
+      signal,
+      stage: PipelineStage.RISK_ASSESSMENT,
+      approved: false,
+      reason: `Risk score ${riskScore} too high (liquidity, spread, or concentration issues)`,
+      riskScore,
+    };
+  }
+
+  return {
+    signal,
+    stage: PipelineStage.RISK_ASSESSMENT,
+    approved: true,
+    reason: `Risk assessment passed with score ${riskScore}`,
+    riskScore,
+  };
+}
+
+/**
+ * Stage 4: Calculate optimal position size using Kelly Criterion
+ */
+function calculateKellySize(
+  signal: TradingSignal,
+  riskSettings: { maxPositionSize: number; maxPortfolioRisk: number },
+  config: ReturnType<typeof getConfig>
+): PipelineDecision {
+  // Kelly Criterion: f* = (bp - q) / b
+  // Where: b = odds, p = probability of winning, q = probability of losing
+
+  const currentPrice = signal.direction === 'BUY_YES'
+    ? (signal.market.tokens.find(t => t.outcome.toLowerCase() === 'yes')?.price || 0.5)
+    : (signal.market.tokens.find(t => t.outcome.toLowerCase() === 'no')?.price || 0.5);
+
+  // Estimated true probability based on our edge
+  const estimatedProb = signal.direction === 'BUY_YES'
+    ? currentPrice + (signal.edge / 100)
+    : (1 - currentPrice) + (signal.edge / 100);
+
+  // Clamp probability to valid range
+  const p = Math.min(0.95, Math.max(0.05, estimatedProb));
+  const q = 1 - p;
+
+  // Odds (payout ratio) - if we win, we get 1/price
+  const b = (1 / currentPrice) - 1;
+
+  // Kelly fraction
+  const kellyFraction = (b * p - q) / b;
+
+  // Apply fractional Kelly for safety
+  const adjustedKelly = kellyFraction * config.kellyFraction;
+
+  // Calculate suggested size
+  const kellySize = Math.max(0, adjustedKelly * riskSettings.maxPortfolioRisk);
+
+  // Cap at max position size
+  const finalSize = Math.min(kellySize, riskSettings.maxPositionSize);
+
+  // Minimum viable trade size
+  if (finalSize < 5) { // Less than $5
+    return {
+      signal,
+      stage: PipelineStage.SIZE_CALCULATION,
+      approved: false,
+      reason: `Kelly-optimal size $${finalSize.toFixed(2)} too small for viable trade`,
+      kellySize: finalSize,
+    };
+  }
+
+  return {
+    signal,
+    stage: PipelineStage.SIZE_CALCULATION,
+    approved: true,
+    reason: `Kelly size: $${finalSize.toFixed(2)} (${(adjustedKelly * 100).toFixed(1)}% of bankroll)`,
+    adjustedSize: finalSize,
+    kellySize: finalSize,
+  };
+}
+
+/**
+ * Run full decision pipeline
+ */
+function runDecisionPipeline(
+  signal: TradingSignal,
+  portfolio: { totalValue: number; positions: any[] },
+  riskSettings: { maxPositionSize: number; maxPortfolioRisk: number },
+  config: ReturnType<typeof getConfig>
+): PipelineDecision {
+  // Stage 1: Pre-screen
+  const preScreen = preScreenSignal(signal, config);
+  if (!preScreen.approved) {
+    return preScreen;
+  }
+
+  // Stage 2: Factor validation
+  const factorValidation = validateFactors(signal, config);
+  if (!factorValidation.approved) {
+    return factorValidation;
+  }
+
+  // Stage 3: Risk assessment
+  const riskAssessment = assessRisk(signal, portfolio);
+  if (!riskAssessment.approved) {
+    return riskAssessment;
+  }
+
+  // Stage 4: Size calculation
+  const sizeCalc = calculateKellySize(signal, riskSettings, config);
+  if (!sizeCalc.approved) {
+    return sizeCalc;
+  }
+
+  // Stage 5: Final approval
+  return {
+    signal,
+    stage: PipelineStage.FINAL_APPROVAL,
+    approved: true,
+    reason: `All stages passed. Risk: ${riskAssessment.riskScore}, Size: $${sizeCalc.adjustedSize?.toFixed(2)}`,
+    adjustedSize: sizeCalc.adjustedSize,
+    riskScore: riskAssessment.riskScore,
+    kellySize: sizeCalc.kellySize,
+  };
 }
 
 interface TradeDecision {
@@ -401,7 +698,9 @@ async function handler(
   logger.info({
     signalCount: signals.length,
     minConfidence: config.minConfidence,
-  }, '[TradingEvaluator] Analysis complete');
+    minComposite: config.minCompositeScore,
+    minConsensus: config.minConsensus,
+  }, '[TradingEvaluator] Analysis complete - running decision pipeline');
 
   if (signals.length === 0) {
     logger.info('[TradingEvaluator] No trading signals generated');
@@ -409,15 +708,44 @@ async function handler(
     return;
   }
 
-  // Filter and execute high-confidence signals
-  const tradableSignals = signals.filter((s) => s.confidence >= config.minConfidence);
+  // Get portfolio and risk settings for pipeline
+  const portfolio = await polymarketService.getPortfolio();
+  const riskSettings = polymarketService.getRiskSettings();
 
-  for (const signal of tradableSignals) {
-    const riskSettings = polymarketService.getRiskSettings();
-    const suggestedSize = Math.min(
-      Math.abs(signal.edge) * 2, // Size based on edge
-      riskSettings.maxPositionSize
-    );
+  // Run each signal through the decision pipeline
+  const pipelineResults: PipelineDecision[] = [];
+  for (const signal of signals) {
+    const decision = runDecisionPipeline(signal, portfolio, riskSettings, config);
+    pipelineResults.push(decision);
+
+    logger.debug({
+      market: signal.market.question.slice(0, 50),
+      stage: decision.stage,
+      approved: decision.approved,
+      reason: decision.reason,
+    }, '[TradingEvaluator] Pipeline decision');
+  }
+
+  // Get approved trades
+  const approvedTrades = pipelineResults.filter(d => d.approved);
+  const rejectedTrades = pipelineResults.filter(d => !d.approved);
+
+  logger.info({
+    total: signals.length,
+    approved: approvedTrades.length,
+    rejected: rejectedTrades.length,
+    rejectionReasons: rejectedTrades.slice(0, 5).map(d => ({
+      stage: d.stage,
+      reason: d.reason,
+    })),
+  }, '[TradingEvaluator] Pipeline summary');
+
+  // Limit concurrent trades
+  const tradesToExecute = approvedTrades.slice(0, config.maxConcurrentTrades);
+
+  for (const decision of tradesToExecute) {
+    const signal = decision.signal;
+    const suggestedSize = decision.adjustedSize || 25; // Use Kelly-optimized size
 
     // Convert signal to opportunity format
     const opportunity: MarketOpportunity = {
@@ -426,6 +754,7 @@ async function handler(
       confidence: signal.confidence,
       reasoning: signal.reasoning,
       suggestedSize,
+      factors: signal.factors,
     };
 
     logger.info({
@@ -434,12 +763,20 @@ async function handler(
       confidence: signal.confidence,
       edge: signal.edge,
       size: suggestedSize,
+      riskScore: decision.riskScore,
+      kellySize: decision.kellySize,
+      factors: signal.factors ? {
+        composite: signal.factors.compositeScore,
+        consensus: signal.factors.consensusScore,
+        freshness: (signal.factors.timeDecay * 100).toFixed(0) + '%',
+      } : null,
       supportingData: {
-        newsCount: signal.supportingData.news.length,
-        tweetCount: signal.supportingData.tweets.length,
-        priceSignalCount: signal.supportingData.priceSignals.length,
+        newsCount: signal.supportingData.news?.length || 0,
+        tweetCount: signal.supportingData.tweets?.length || 0,
+        priceSignalCount: signal.supportingData.priceSignals?.length || 0,
+        webSignalCount: signal.supportingData.webSignals?.length || 0,
       },
-    }, '[TradingEvaluator] Executing trade based on signal');
+    }, '[TradingEvaluator] Executing trade - pipeline approved');
 
     const result = await executeTrade(polymarketService, opportunity);
 
@@ -483,6 +820,14 @@ async function handler(
             strength: p.strength,
             timestamp: p.timestamp,
           })),
+          ...(signal.supportingData.webSignals || []).map((w) => ({
+            source: 'Tavily',
+            type: 'web' as const,
+            signal: w.summary,
+            sentiment: w.direction as 'bullish' | 'bearish' | 'neutral',
+            strength: w.strength,
+            timestamp: w.timestamp,
+          })),
         ];
 
         strategyLearning.recordTradeEntry({
@@ -493,6 +838,11 @@ async function handler(
           size: suggestedSize,
           dataSignals,
           reasoning: signal.reasoning,
+          pipelineMetadata: {
+            riskScore: decision.riskScore,
+            kellySize: decision.kellySize,
+            factors: signal.factors,
+          },
         });
 
         logger.info('[TradingEvaluator] Trade recorded in strategy learning service');
@@ -517,10 +867,25 @@ async function handler(
             edge: signal.edge,
             reasoning: signal.reasoning,
             orderId: result.orderId,
+            pipelineData: {
+              riskScore: decision.riskScore,
+              kellySize: decision.kellySize,
+              adjustedSize: decision.adjustedSize,
+            },
+            factors: signal.factors ? {
+              composite: signal.factors.compositeScore,
+              consensus: signal.factors.consensusScore,
+              news: signal.factors.newsScore,
+              social: signal.factors.socialScore,
+              webSearch: signal.factors.webSearchScore,
+              volume: signal.factors.volumeScore,
+              freshness: signal.factors.timeDecay,
+            } : null,
             supportingDataSummary: {
-              newsItems: signal.supportingData.news.length,
-              tweets: signal.supportingData.tweets.length,
-              priceSignals: signal.supportingData.priceSignals.length,
+              newsItems: signal.supportingData.news?.length || 0,
+              tweets: signal.supportingData.tweets?.length || 0,
+              priceSignals: signal.supportingData.priceSignals?.length || 0,
+              webSignals: signal.supportingData.webSignals?.length || 0,
             },
           },
         },
