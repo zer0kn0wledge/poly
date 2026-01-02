@@ -814,7 +814,7 @@ function generateDropForeignKeySQL(fk: any): string {
       ? fk.tableFrom.split('.')
       : ['public', fk.tableFrom]
     : ['public', ''];
-  return `ALTER TABLE "${schema}"."${tableName}" DROP CONSTRAINT "${fk.name}";`;
+  return `ALTER TABLE "${schema}"."${tableName}" DROP CONSTRAINT IF EXISTS "${fk.name}";`;
 }
 
 /**
@@ -863,7 +863,7 @@ function generateDropUniqueConstraintSQL(constraint: any): string {
   const table = constraint.table || '';
   const [schema, tableName] = table.includes('.') ? table.split('.') : ['public', table];
 
-  return `ALTER TABLE "${schema}"."${tableName}" DROP CONSTRAINT "${constraint.name}";`;
+  return `ALTER TABLE "${schema}"."${tableName}" DROP CONSTRAINT IF EXISTS "${constraint.name}";`;
 }
 
 /**
@@ -886,5 +886,5 @@ function generateDropCheckConstraintSQL(constraint: any): string {
   const table = constraint.table || '';
   const [schema, tableName] = table.includes('.') ? table.split('.') : ['public', table];
 
-  return `ALTER TABLE "${schema}"."${tableName}" DROP CONSTRAINT "${constraint.name}";`;
+  return `ALTER TABLE "${schema}"."${tableName}" DROP CONSTRAINT IF EXISTS "${constraint.name}";`;
 }
