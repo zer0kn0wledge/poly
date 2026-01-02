@@ -1,0 +1,51 @@
+{
+  "name": "@elizaos/plugin-polymarket",
+  "version": "1.0.0-alpha.1",
+  "description": "Polymarket prediction market trading plugin for ElizaOS",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./plugin": {
+      "import": "./dist/plugin.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "start": "SERVER_PORT=${PORT:-3000} elizaos start",
+    "lint": "eslint . --fix",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@elizaos/core": "workspace:*",
+    "@polymarket/clob-client": "^5.1.3",
+    "ethers": "^5.7.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.2"
+  },
+  "peerDependencies": {
+    "@elizaos/core": "workspace:*"
+  },
+  "keywords": [
+    "elizaos",
+    "plugin",
+    "polymarket",
+    "prediction-market",
+    "trading",
+    "defi"
+  ],
+  "license": "MIT"
+}
