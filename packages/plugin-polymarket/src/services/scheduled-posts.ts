@@ -342,8 +342,7 @@ Write a professional tweet (max 280 chars) that:
 1. Opens with a brief market observation or insight
 2. Highlights 1-2 interesting odds or movements
 3. Provides your analytical take (not just data)
-4. Uses professional tone - no emojis, no excessive punctuation
-5. End with #Polymarket
+4. Uses professional tone - no emojis, no hashtags, no excessive punctuation
 
 Keep it sharp, analytical, and data-driven. Sound like a professional analyst, not a social media influencer.
 Return ONLY the tweet text.`;
@@ -354,10 +353,12 @@ Return ONLY the tweet text.`;
       });
 
       if (typeof response === 'string') {
-        // Remove any emojis that might slip through
+        // Remove any emojis and hashtags that might slip through
         const cleaned = response
           .replace(/[\u{1F300}-\u{1F9FF}]/gu, '')
           .replace(/[\u{2600}-\u{27BF}]/gu, '')
+          .replace(/#\w+/g, '')
+          .replace(/\s+/g, ' ')
           .trim();
         return cleaned.slice(0, 280);
       }
@@ -374,10 +375,8 @@ Return ONLY the tweet text.`;
 
       return `Market Update (${etTime.timeStr} ET)
 
-Top market: "${topMarket.question.slice(0, 70)}"
-${(yesPrice * 100).toFixed(0)}% YES | ${vol} volume
-
-#Polymarket`.slice(0, 280);
+Top market: "${topMarket.question.slice(0, 80)}"
+${(yesPrice * 100).toFixed(0)}% YES | ${vol} volume`.slice(0, 280);
     }
   }
 
@@ -411,10 +410,9 @@ Write a professional tweet (max 280 chars) that:
 1. Highlights 2-3 key markets with current odds
 2. Provides analytical insight on pricing
 3. Notes any significant volume patterns
-4. Uses professional, authoritative tone
-5. End with #Polymarket #DailyBrief
+4. Uses professional, authoritative tone - NO hashtags, NO emojis
 
-IMPORTANT: No emojis. No exclamation marks. No slang.
+IMPORTANT: No emojis. No hashtags. No exclamation marks. No slang.
 Sound like a Bloomberg analyst, not a Twitter influencer.
 Return ONLY the tweet text.`;
 
@@ -424,10 +422,12 @@ Return ONLY the tweet text.`;
       });
 
       if (typeof response === 'string') {
-        // Remove any emojis that might slip through
+        // Remove any emojis and hashtags that might slip through
         const cleaned = response
           .replace(/[\u{1F300}-\u{1F9FF}]/gu, '')
           .replace(/[\u{2600}-\u{27BF}]/gu, '')
+          .replace(/#\w+/g, '')
+          .replace(/\s+/g, ' ')
           .trim();
         return cleaned.slice(0, 280);
       }
@@ -437,14 +437,12 @@ Return ONLY the tweet text.`;
 
       // Fallback: generate simple update
       const top3 = markets.slice(0, 3);
-      const fallback = `Daily Market Brief (${etTime.dateStr})
+      const fallback = `Daily Brief (${etTime.dateStr})
 
 ${top3.map((m, i) => {
   const yesPrice = m.tokens.find((t) => t.outcome.toLowerCase() === 'yes')?.price || 0.5;
-  return `${i + 1}. ${m.question.slice(0, 50)}... - ${(yesPrice * 100).toFixed(0)}%`;
-}).join('\n')}
-
-#Polymarket #DailyBrief`;
+  return `${i + 1}. ${m.question.slice(0, 55)}... - ${(yesPrice * 100).toFixed(0)}%`;
+}).join('\n')}`;
 
       return fallback.slice(0, 280);
     }
@@ -509,13 +507,11 @@ ${top3.map((m, i) => {
     const etTime = getCurrentETTime();
 
     if (!stats || stats.closedTrades === 0) {
-      return `Weekly Trade Summary (${etTime.dateStr})
+      return `Weekly Summary (${etTime.dateStr})
 
-No trades closed this week. Markets were quiet or i was accumulating positions.
+No trades closed this week. Markets were quiet or positions are still open.
 
-Next week: watching for catalyst events and mispriced markets.
-
-#Polymarket #WeeklyUpdate`.slice(0, 280);
+Next week: watching for catalyst events and mispriced markets.`.slice(0, 280);
     }
 
     const prompt = `You are Zeracle, a professional prediction market analyst. Generate a weekly performance summary tweet.
@@ -531,10 +527,9 @@ ${stats.worstTrade && stats.worstTrade.pnl && stats.worstTrade.pnl < 0 ? `- Larg
 Write a professional tweet (max 280 chars) that:
 1. Reports performance metrics objectively
 2. Notes one key insight or lesson
-3. Uses professional, analytical tone
-4. End with #Polymarket #WeeklyReview
+3. Uses professional, analytical tone - NO hashtags, NO emojis
 
-IMPORTANT: No emojis. Be transparent about both wins and losses.
+IMPORTANT: No emojis. No hashtags. Be transparent about both wins and losses.
 Return ONLY the tweet text.`;
 
     try {
@@ -543,10 +538,12 @@ Return ONLY the tweet text.`;
       });
 
       if (typeof response === 'string') {
-        // Remove any emojis that might slip through
+        // Remove any emojis and hashtags that might slip through
         const cleaned = response
           .replace(/[\u{1F300}-\u{1F9FF}]/gu, '')
           .replace(/[\u{2600}-\u{27BF}]/gu, '')
+          .replace(/#\w+/g, '')
+          .replace(/\s+/g, ' ')
           .trim();
         return cleaned.slice(0, 280);
       }
@@ -562,9 +559,7 @@ Trades: ${stats.closedTrades} closed
 Win Rate: ${stats.winRate.toFixed(0)}% (${stats.winCount}W/${stats.lossCount}L)
 P&L: ${pnlSign}$${stats.totalPnl.toFixed(2)}
 
-${stats.lessonsLearned[0] || 'Discipline over conviction.'}
-
-#Polymarket #WeeklyReview`.slice(0, 280);
+${stats.lessonsLearned[0] || 'Discipline over conviction.'}`.slice(0, 280);
     }
   }
 

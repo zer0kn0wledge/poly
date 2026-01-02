@@ -24,7 +24,7 @@ import { getCurrentETTime } from '../providers/timezone';
 import type { PolymarketMarket } from '../types';
 
 /**
- * Sanitize text to prevent encoding issues.
+ * Sanitize text - remove emojis and hashtags.
  */
 function sanitizeText(text: string): string {
   if (!text) return '';
@@ -39,7 +39,8 @@ function sanitizeText(text: string): string {
     .replace(/[\u{1F900}-\u{1F9FF}]/gu, '')
     .replace(/[\u{1FA00}-\u{1FA6F}]/gu, '')
     .replace(/[\u{1FA70}-\u{1FAFF}]/gu, '')
-    .replace(/[^\x00-\x7F]/g, '')
+    .replace(/#\w+/g, '') // Remove hashtags
+    .replace(/\s+/g, ' ') // Normalize whitespace
     .trim();
 }
 
@@ -347,8 +348,7 @@ ${newsContext ? `NEWS:\n${newsContext}` : ''}
 Write a professional tweet (max 280 chars) that:
 1. Highlights 1-2 key markets with odds
 2. Provides brief analytical insight
-3. Professional tone - no emojis
-4. End with #Polymarket #${category.charAt(0).toUpperCase() + category.slice(1)}
+3. Professional tone - no emojis, no hashtags
 
 Return ONLY the tweet text.`;
 
@@ -408,8 +408,7 @@ Time: ${etTime.dateStr} ${etTime.timeStr} ET
 Write a professional tweet (max 280 chars) that:
 1. States the market and current odds
 2. Provides brief analytical context
-3. Professional tone - no emojis, no exclamation marks
-4. End with #Polymarket
+3. Professional tone - no emojis, no hashtags, no exclamation marks
 
 Return ONLY the tweet text.`;
 

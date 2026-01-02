@@ -553,26 +553,28 @@ async function handler(
 }
 
 /**
- * Format trade for Twitter post
+ * Format trade for Twitter post - professional, no emojis or hashtags
  */
 function formatTradeForTwitter(
   opportunity: MarketOpportunity,
   result: { success: boolean; message: string; orderId?: string }
 ): string {
   const outcome = opportunity.signal === 'BUY_YES' ? 'YES' : 'NO';
-  const emoji = opportunity.signal === 'BUY_YES' ? '🟢' : '🔴';
+  const price = opportunity.market.tokens.find(t => t.outcome.toLowerCase() === outcome.toLowerCase())?.price ?? 0.5;
 
-  return `${emoji} New Polymarket Trade
+  // Clean reasoning of any emojis
+  const cleanReasoning = opportunity.reasoning
+    .replace(/[\u{1F300}-\u{1F9FF}]/gu, '')
+    .replace(/[\u{2600}-\u{27BF}]/gu, '')
+    .slice(0, 150);
 
-📊 ${opportunity.market.question.slice(0, 100)}${opportunity.market.question.length > 100 ? '...' : ''}
+  return `New Position: ${outcome} @ ${(price * 100).toFixed(0)}%
 
-Position: ${outcome} @ ${((opportunity.market.tokens.find(t => t.outcome.toLowerCase() === outcome.toLowerCase())?.price ?? 0.5) * 100).toFixed(0)}%
-Size: $${opportunity.suggestedSize.toFixed(0)}
-Confidence: ${opportunity.confidence}%
+"${opportunity.market.question.slice(0, 80)}${opportunity.market.question.length > 80 ? '...' : ''}"
 
-💭 Reasoning: ${opportunity.reasoning.slice(0, 150)}${opportunity.reasoning.length > 150 ? '...' : ''}
+Size: $${opportunity.suggestedSize.toFixed(0)} | Confidence: ${opportunity.confidence}%
 
-#Polymarket #PredictionMarkets #Trading`;
+Thesis: ${cleanReasoning}${opportunity.reasoning.length > 150 ? '...' : ''}`;
 }
 
 export const tradingEvaluator: Evaluator = {
