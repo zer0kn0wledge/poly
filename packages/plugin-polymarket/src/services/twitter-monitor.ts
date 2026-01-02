@@ -205,13 +205,95 @@ export class TwitterMonitorService extends Service {
   private readonly MAX_REQUESTS_PER_CYCLE = 5; // Max requests per scan cycle
   private mentionPollInterval: NodeJS.Timer | null = null;
 
+  // Rate limiting state
+  private rateLimitedUntil: Date | null = null;
+  private monthlyCapExceeded: boolean = false;
+  private readonly RATE_LIMIT_BACKOFF_MS = 15 * 60 * 1000; // 15 minutes
+  private runtime: IAgentRuntime | null = null;
+
   constructor() {
     super();
+  }
+
+  /**
+   * Check if we're currently rate limited
+   */
+  private isRateLimited(): boolean {
+    if (this.monthlyCapExceeded) {
+      return true;
+    }
+    if (this.rateLimitedUntil && new Date() < this.rateLimitedUntil) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Handle Twitter API errors, especially 429s
+   */
+  private handleTwitterError(status: number, errorData: any): void {
+    if (status === 429) {
+      const errorTitle = errorData?.title || '';
+      const errorDetail = errorData?.detail || '';
+
+      // Check if it's monthly cap vs temporary rate limit
+      if (errorTitle === 'UsageCapExceeded' || errorDetail.includes('Monthly')) {
+        logger.error('[TwitterMonitor] MONTHLY CAP EXCEEDED - Disabling Twitter monitoring');
+        this.monthlyCapExceeded = true;
+
+        // Store this so it persists across restarts
+        if (this.runtime) {
+          this.runtime.setSetting('TWITTER_MONTHLY_CAP_EXCEEDED', 'true');
+          this.runtime.setSetting('TWITTER_CAP_EXCEEDED_DATE', new Date().toISOString());
+        }
+      } else {
+        // Temporary rate limit - back off
+        this.rateLimitedUntil = new Date(Date.now() + this.RATE_LIMIT_BACKOFF_MS);
+        logger.warn({ resumeAt: this.rateLimitedUntil.toISOString() },
+          '[TwitterMonitor] Rate limited, backing off for 15 minutes');
+      }
+    }
+  }
+
+  /**
+   * Check rate limit status from previous sessions
+   */
+  private checkRateLimitStatus(): void {
+    if (!this.runtime) return;
+
+    const capExceeded = this.runtime.getSetting('TWITTER_MONTHLY_CAP_EXCEEDED');
+    const capDate = this.runtime.getSetting('TWITTER_CAP_EXCEEDED_DATE');
+
+    if (capExceeded === 'true' && capDate) {
+      const exceedDate = new Date(capDate);
+      const now = new Date();
+
+      // Reset if we're in a new month
+      if (exceedDate.getMonth() !== now.getMonth() ||
+          exceedDate.getFullYear() !== now.getFullYear()) {
+        logger.info('[TwitterMonitor] New month - resetting cap exceeded flag');
+        this.runtime.setSetting('TWITTER_MONTHLY_CAP_EXCEEDED', 'false');
+        this.monthlyCapExceeded = false;
+      } else {
+        logger.warn('[TwitterMonitor] Monthly cap still exceeded from previous session');
+        this.monthlyCapExceeded = true;
+      }
+    }
   }
 
 
   override async initialize(runtime: IAgentRuntime): Promise<void> {
     logger.info('[TwitterMonitor] Initializing Twitter monitor service');
+    this.runtime = runtime;
+
+    // Check rate limit status from previous sessions
+    this.checkRateLimitStatus();
+
+    // If monthly cap exceeded, skip initialization
+    if (this.monthlyCapExceeded) {
+      logger.warn('[TwitterMonitor] Monthly cap exceeded - skipping Twitter API initialization');
+      return;
+    }
 
     // Load credentials
     this.clientId = process.env.TWITTER_CLIENT_ID || runtime.getSetting('TWITTER_CLIENT_ID') || '';
@@ -239,6 +321,7 @@ export class TwitterMonitorService extends Service {
     }
 
     // Start mention polling if we have the required credentials
+    // Use longer poll interval (5 minutes) to conserve rate limits
     if (this.ownUserId && this.bearerToken) {
       this.startMentionPolling();
     }
@@ -290,13 +373,19 @@ export class TwitterMonitorService extends Service {
    * Start polling for mentions
    */
   private startMentionPolling(): void {
-    // Poll every 2 minutes (respects rate limits)
-    const POLL_INTERVAL = 2 * 60 * 1000;
+    // Poll every 5 minutes to conserve rate limits (Twitter free tier is very limited)
+    const POLL_INTERVAL = 5 * 60 * 1000;
 
     logger.info({ pollInterval: POLL_INTERVAL / 1000 + 's' },
       '[TwitterMonitor] Starting mention polling');
 
     this.mentionPollInterval = setInterval(async () => {
+      // Skip if rate limited
+      if (this.isRateLimited()) {
+        logger.debug('[TwitterMonitor] Skipping poll - rate limited');
+        return;
+      }
+
       try {
         await this.pollMentions();
       } catch (error) {
@@ -304,10 +393,14 @@ export class TwitterMonitorService extends Service {
       }
     }, POLL_INTERVAL);
 
-    // Also do an initial poll
-    this.pollMentions().catch(err =>
-      logger.error({ err }, '[TwitterMonitor] Initial mention poll failed')
-    );
+    // Also do an initial poll (after a short delay to not hit rate limits immediately)
+    setTimeout(() => {
+      if (!this.isRateLimited()) {
+        this.pollMentions().catch(err =>
+          logger.error({ err }, '[TwitterMonitor] Initial mention poll failed')
+        );
+      }
+    }, 10000); // 10 second delay
   }
 
   /**
@@ -318,11 +411,17 @@ export class TwitterMonitorService extends Service {
       return [];
     }
 
+    // Check rate limit before making request
+    if (this.isRateLimited()) {
+      logger.debug('[TwitterMonitor] Skipping pollMentions - rate limited');
+      return [];
+    }
+
     await this.enforceRateLimit();
 
     try {
       const params = new URLSearchParams({
-        max_results: '20',
+        max_results: '10', // Reduced from 20 to conserve rate limits
         'tweet.fields': 'created_at,conversation_id,in_reply_to_user_id,author_id',
         'user.fields': 'username',
         expansions: 'author_id',
@@ -345,8 +444,20 @@ export class TwitterMonitorService extends Service {
       }
 
       if (!response.ok) {
-        const error = await response.text();
-        logger.warn({ status: response.status, error }, '[TwitterMonitor] Mention fetch failed');
+        // Parse error and handle rate limits
+        let errorData: any = {};
+        try {
+          const errorText = await response.text();
+          errorData = JSON.parse(errorText);
+        } catch {
+          // Ignore parse errors
+        }
+
+        // Handle rate limiting
+        this.handleTwitterError(response.status, errorData);
+
+        logger.warn({ status: response.status, error: errorData },
+          '[TwitterMonitor] Mention fetch failed');
         return [];
       }
 

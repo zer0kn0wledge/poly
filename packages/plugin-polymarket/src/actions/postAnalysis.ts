@@ -127,15 +127,24 @@ export const postAnalysisAction: Action = {
   ): Promise<boolean> => {
     const text = message.content.text?.toLowerCase() || '';
 
-    // Must include post/tweet intent
-    const postKeywords = ['post', 'tweet', 'share', 'publish', 'send to twitter'];
-    const hasPostIntent = postKeywords.some((k) => text.includes(k));
+    // AGGRESSIVE: Any mention of twitter/tweet/post should trigger this action
+    // This is the PRIMARY action for all Twitter posting - be liberal in matching
+    const twitterTriggers = [
+      'tweet', 'twitter', 'post this', 'share this', 'post it',
+      'share it', 'put this on', 'send to twitter', 'post on x',
+      'share on x', 'post analysis', 'tweet analysis', 'x.com',
+      'can you tweet', 'can you post', 'please tweet', 'please post',
+      'would you tweet', 'could you post', 'make a tweet', 'send tweet',
+      'publish', 'post to', 'share to', 'tweet about', 'post about'
+    ];
 
-    // And be about analysis/markets/update
-    const analysisKeywords = ['analysis', 'update', 'market', 'daily', 'weekly', 'crypto', 'politics', 'sports'];
-    const hasAnalysisContext = analysisKeywords.some((k) => text.includes(k));
+    const shouldTrigger = twitterTriggers.some((t) => text.includes(t));
 
-    return hasPostIntent && hasAnalysisContext;
+    if (shouldTrigger) {
+      logger.info('[POST_ANALYSIS] Validation PASSED - twitter request detected', { text: text.slice(0, 50) });
+    }
+
+    return shouldTrigger;
   },
 
   handler: async (

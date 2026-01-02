@@ -209,27 +209,40 @@ export class PolymarketService extends Service {
    * Ensure token allowances are set for USDC and conditional tokens.
    * This is required before placing any trades.
    *
-   * Note: We skip getAllowances() check as it may not be available in all SDK versions.
-   * Instead, we attempt to set allowances and handle errors gracefully.
+   * Note: The CLOB client SDK methods for allowances may not exist in all versions.
+   * We skip the allowance check entirely and let trades fail with clear errors if needed.
+   * This prevents "is not a function" errors from breaking the service.
    */
   private async ensureAllowances(): Promise<void> {
     if (!this.client) return;
 
     try {
-      // Note: getAllowances() is not available in all CLOB client versions
-      // Instead, we attempt to set allowances which is idempotent
-      // If already set, this will be a no-op or low gas transaction
+      // Check if setAllowances method exists on the client
+      // Some SDK versions don't have this method
+      if (typeof (this.client as any).setAllowances !== 'function') {
+        logger.info('[PolymarketService] setAllowances not available in this SDK version - skipping');
+        // Assume allowances are OK, let trades fail with clear error if not
+        this.allowancesApproved = true;
+        return;
+      }
 
       logger.info('[PolymarketService] Checking/setting token allowances...');
 
       // Set max allowances for USDC and conditional tokens
       // This requires on-chain transactions (gas fees apply on first run)
-      await this.client.setAllowances();
+      await (this.client as any).setAllowances();
 
       logger.info('[PolymarketService] Token allowances verified/set successfully');
       this.allowancesApproved = true;
     } catch (error: any) {
       const errorMsg = error?.message || String(error);
+
+      // Check for "is not a function" error - means method doesn't exist
+      if (errorMsg.includes('is not a function') || errorMsg.includes('not a function')) {
+        logger.info('[PolymarketService] Allowance methods not available - skipping');
+        this.allowancesApproved = true;
+        return;
+      }
 
       // Check if it's a "already approved" type error (which means allowances are set)
       if (errorMsg.includes('already') || errorMsg.includes('allowance')) {

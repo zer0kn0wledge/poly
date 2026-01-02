@@ -57,6 +57,9 @@ export class ScheduledPostsService extends Service {
     logger.info('[ScheduledPosts] Initializing scheduled posts service');
     this.runtime = runtime;
 
+    // Wait for dependent services to become available
+    await this.waitForServices();
+
     const etTime = getCurrentETTime();
     logger.info({
       currentHour: etTime.hour,
@@ -73,9 +76,57 @@ export class ScheduledPostsService extends Service {
       });
     }, 60 * 1000); // Check every minute
 
-    // Also do an immediate check
-    logger.info('[ScheduledPosts] Running immediate check on startup');
-    await this.checkAndExecuteScheduledPosts();
+    // Also do an immediate check (with delay to let other services finish init)
+    setTimeout(() => {
+      logger.info('[ScheduledPosts] Running initial check after startup delay');
+      this.checkAndExecuteScheduledPosts().catch((error) => {
+        logger.error({ error }, '[ScheduledPosts] Error in initial check');
+      });
+    }, 10000); // 10 second delay
+  }
+
+  /**
+   * Wait for required services to become available
+   */
+  private async waitForServices(maxWaitMs: number = 30000): Promise<void> {
+    const requiredServices = ['polymarket', 'twitter'];
+    const startTime = Date.now();
+
+    logger.info('[ScheduledPosts] Waiting for required services...', { requiredServices });
+
+    while (Date.now() - startTime < maxWaitMs) {
+      if (!this.runtime) break;
+
+      const missing = requiredServices.filter(
+        name => !this.runtime!.getService(name)
+      );
+
+      if (missing.length === 0) {
+        logger.info('[ScheduledPosts] All required services available');
+        return;
+      }
+
+      logger.debug('[ScheduledPosts] Waiting for services', { missing });
+      await this.sleep(1000);
+    }
+
+    // Log which services are still missing
+    if (!this.runtime) return;
+
+    const stillMissing = requiredServices.filter(
+      name => !this.runtime!.getService(name)
+    );
+
+    if (stillMissing.length > 0) {
+      logger.warn('[ScheduledPosts] Some services unavailable after timeout', {
+        missing: stillMissing,
+        availableServices: requiredServices.filter(name => this.runtime!.getService(name))
+      });
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   override async stop(): Promise<void> {
@@ -331,20 +382,25 @@ export class ScheduledPostsService extends Service {
       return `${i + 1}. "${m.question.slice(0, 60)}" - ${(yesPrice * 100).toFixed(0)}% YES (${vol} vol)`;
     }).join('\n');
 
-    const prompt = `You are Zeracle, a sharp prediction market analyst. Generate a market update tweet.
+    const prompt = `You are Zeracle, an elite prediction market analyst. Generate a market update tweet.
 
 Time: ${etTime.timeStr} ET
 
 TOP MARKETS:
 ${marketsText}
 
-Write a professional tweet (max 280 chars) that:
-1. Opens with a brief market observation or insight
-2. Highlights 1-2 interesting odds or movements
-3. Provides your analytical take (not just data)
-4. Uses professional tone - no emojis, no hashtags, no excessive punctuation
+REQUIREMENTS - READ CAREFULLY:
+1. Use FULL 280 characters - do NOT cut short. Target 260-280 chars.
+2. Lead with an INSIGHT, not just "Market Update"
+3. Include specific numbers: odds, volume, price movements
+4. Explain WHY something is interesting (smart money, mispricing, catalyst)
+5. Sound like a Bloomberg terminal note - professional, analytical
+6. NO emojis, NO hashtags, NO exclamation marks
 
-Keep it sharp, analytical, and data-driven. Sound like a professional analyst, not a social media influencer.
+BAD (too short/generic): "Markets looking interesting today. Some movement in various sectors."
+GOOD (specific/insightful): "Super Bowl odds diverging from public sentiment: Patriots at 8% despite $8.3M volume suggests institutional accumulation. Texans at 5% looks underpriced given AFC South dynamics."
+
+Minimum 250 characters. Use the full space.
 Return ONLY the tweet text.`;
 
     try {
@@ -396,7 +452,7 @@ ${(yesPrice * 100).toFixed(0)}% YES | ${vol} volume`.slice(0, 280);
    YES: ${(yesPrice * 100).toFixed(0)}% | Vol: $${((m.volume_num || 0) / 1000).toFixed(0)}k | ${timeContext}`;
     }).join('\n');
 
-    const prompt = `You are Zeracle, a professional prediction market analyst. Generate a daily market briefing tweet.
+    const prompt = `You are Zeracle, an elite prediction market analyst. Generate a daily market briefing tweet.
 
 Date: ${etTime.dayOfWeek}, ${etTime.dateStr}
 
@@ -406,14 +462,19 @@ ${marketsText}
 RELEVANT NEWS:
 ${newsContext || 'No significant news.'}
 
-Write a professional tweet (max 280 chars) that:
-1. Highlights 2-3 key markets with current odds
-2. Provides analytical insight on pricing
-3. Notes any significant volume patterns
-4. Uses professional, authoritative tone - NO hashtags, NO emojis
+REQUIREMENTS - READ CAREFULLY:
+1. Use FULL 280 characters - target 260-280 chars
+2. Lead with your sharpest insight about today's markets
+3. Highlight 2-3 specific markets with exact odds (e.g., "67% YES")
+4. Include volume figures where notable (e.g., "$2.1M volume")
+5. Explain WHY odds are interesting (mispricing, smart money divergence, upcoming catalyst)
+6. Sound like a Bloomberg morning note - professional, precise, analytical
+7. NO emojis, NO hashtags, NO exclamation marks
 
-IMPORTANT: No emojis. No hashtags. No exclamation marks. No slang.
-Sound like a Bloomberg analyst, not a Twitter influencer.
+BAD (generic): "Good morning! Markets are active today with several interesting opportunities."
+GOOD (specific): "Morning brief: BTC $100K by March at 41% looks mispriced given ETF inflows. Trump nomination market seeing unusual volume at 67% - smart money positioning ahead of primaries. Watch Fed odds post-FOMC."
+
+Minimum 250 characters. Use the full character limit.
 Return ONLY the tweet text.`;
 
     try {
