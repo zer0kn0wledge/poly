@@ -112,13 +112,7 @@ export const viewMarketsAction: Action = {
       const limitMatch = text.match(/(\d+)\s*(?:markets?|results?)/i);
       const limit = limitMatch ? Math.min(parseInt(limitMatch[1]), 20) : 5;
 
-      if (callback) {
-        await callback({
-          text: query
-            ? `Searching for markets about "${query}"...`
-            : 'Fetching active markets...',
-        });
-      }
+      logger.info({ query, limit }, '[ViewMarketsAction] Fetching markets');
 
       // Fetch markets
       const markets = query
@@ -136,7 +130,7 @@ export const viewMarketsAction: Action = {
       }
 
       // Format market list - single-line format to prevent DB issues with newlines
-      const marketList = markets.slice(0, 3).map((m, i) => {
+      const marketList = markets.slice(0, 5).map((m, i) => {
         const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
         const noToken = m.tokens.find(t => t.outcome.toLowerCase() === 'no');
         const yesPrice = yesToken?.price ?? 0.5;
@@ -147,6 +141,8 @@ export const viewMarketsAction: Action = {
       }).join(' | ');
 
       const responseText = `Markets${query ? ` for "${sanitizeText(query)}"` : ''}: ${marketList}`;
+
+      logger.info({ marketCount: markets.length, responsePreview: responseText.slice(0, 100) }, '[ViewMarketsAction] Sending response');
 
       if (callback) {
         await callback({
