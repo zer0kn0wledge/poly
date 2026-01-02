@@ -551,337 +551,357 @@ export class PolymarketService extends Service {
     return hasVerifyKeyword;
   }
 
+  // ============================================================
+  // CATEGORY KEYWORD CONFIGURATION
+  // Used for reliable client-side filtering
+  // ============================================================
+
+  private static CATEGORY_KEYWORDS: Record<string, { include: string[], exclude: string[] }> = {
+    'sports': {
+      include: [
+        // Major events
+        'super bowl', 'world series', 'stanley cup', 'nba finals', 'march madness',
+        'world cup', 'olympics', 'grand slam', 'champions league', 'premier league',
+        // Leagues
+        'nfl', 'nba', 'mlb', 'nhl', 'mls', 'pga', 'atp', 'wta', 'ufc', 'wwe',
+        // Sports
+        'football', 'basketball', 'baseball', 'hockey', 'soccer', 'tennis',
+        'golf', 'boxing', 'mma', 'wrestling', 'racing', 'f1', 'nascar',
+        // Actions
+        'win the', 'wins the', 'champion', 'playoff', 'mvp', 'draft pick',
+        'score', 'touchdown', 'home run', 'goal', 'match', 'game'
+      ],
+      exclude: [
+        'trump', 'biden', 'election', 'president', 'congress', 'senate',
+        'bitcoin', 'ethereum', 'crypto', 'btc', 'eth',
+        'fed rate', 'interest rate', 'tariff', 'deficit', 'immigration',
+        'ceo', 'stock price'
+      ]
+    },
+    'crypto': {
+      include: [
+        // Coins
+        'bitcoin', 'btc', 'ethereum', 'eth', 'solana', 'sol', 'xrp', 'ripple',
+        'cardano', 'ada', 'dogecoin', 'doge', 'polygon', 'matic', 'avalanche',
+        // General
+        'crypto', 'cryptocurrency', 'blockchain', 'token', 'coin',
+        'defi', 'nft', 'web3', 'dao',
+        // Entities
+        'binance', 'coinbase', 'kraken', 'ftx',
+        // Price actions
+        'price above', 'price below', 'reach $', 'hit $', 'all-time high', 'ath',
+        'market cap', 'trading volume', 'halving', 'airdrop'
+      ],
+      exclude: [
+        'trump', 'biden', 'election', 'president', 'congress',
+        'super bowl', 'nfl', 'nba', 'world cup', 'championship game',
+        'fed rate', 'recession'
+      ]
+    },
+    'politics': {
+      include: [
+        // People
+        'trump', 'biden', 'harris', 'desantis', 'newsom', 'obama',
+        // Institutions
+        'president', 'congress', 'senate', 'house', 'supreme court',
+        'white house', 'cabinet', 'administration', 'governor', 'mayor',
+        // Actions
+        'election', 'vote', 'poll', 'primary', 'caucus', 'debate',
+        'impeach', 'resign', 'nominate', 'confirm', 'veto',
+        // Parties
+        'republican', 'democrat', 'gop', 'dnc', 'rnc',
+        // Policy
+        'legislation', 'bill', 'law', 'executive order', 'pardon'
+      ],
+      exclude: [
+        'bitcoin price', 'ethereum price', 'btc above', 'eth above',
+        'super bowl', 'nfl champion', 'nba finals', 'world series'
+      ]
+    },
+    'economics': {
+      include: [
+        // Fed/monetary
+        'fed', 'federal reserve', 'interest rate', 'rate cut', 'rate hike',
+        'powell', 'fomc', 'monetary policy',
+        // Indicators
+        'inflation', 'cpi', 'gdp', 'recession', 'unemployment', 'jobs report',
+        'nonfarm', 'payroll', 'consumer spending',
+        // Fiscal
+        'deficit', 'debt', 'budget', 'treasury', 'bond', 'yield',
+        'tariff', 'trade war', 'sanctions',
+        // Markets
+        'stock market', 'dow', 's&p', 'nasdaq', 'market crash', 'correction'
+      ],
+      exclude: [
+        'super bowl', 'nfl', 'nba', 'bitcoin price', 'ethereum price'
+      ]
+    },
+    'finance': {
+      include: [
+        'fed', 'interest rate', 'inflation', 'gdp', 'recession',
+        'stock', 'market', 's&p', 'dow', 'nasdaq',
+        'treasury', 'bond', 'yield', 'rate cut', 'tariff'
+      ],
+      exclude: ['super bowl', 'nfl', 'nba', 'bitcoin price']
+    },
+    'tech': {
+      include: [
+        'ai', 'artificial intelligence', 'chatgpt', 'openai', 'google', 'apple',
+        'microsoft', 'amazon', 'meta', 'tesla', 'nvidia',
+        'iphone', 'android', 'app store', 'antitrust',
+        'launch', 'release', 'product', 'ceo', 'acquisition'
+      ],
+      exclude: ['super bowl', 'nfl', 'nba', 'election', 'bitcoin price']
+    },
+    'world': {
+      include: [
+        'war', 'peace', 'conflict', 'invasion', 'ceasefire', 'treaty',
+        'ukraine', 'russia', 'china', 'taiwan', 'israel', 'gaza', 'iran',
+        'nato', 'un', 'united nations', 'eu', 'european union',
+        'sanctions', 'diplomacy', 'summit', 'leader', 'prime minister'
+      ],
+      exclude: ['nfl', 'nba', 'super bowl', 'bitcoin price']
+    }
+  };
+
   /**
-   * Get markets by category/topic with strict verification
-   * Categories: politics, crypto, sports, finance, tech, entertainment, science, world
+   * Get category keyword config
    */
-  async getMarketsByCategory(category: string, limit = 20): Promise<PolymarketMarket[]> {
-    const config = PolymarketService.CATEGORY_CONFIG[category.toLowerCase()];
-
-    // Fallback for unknown categories
-    if (!config) {
-      logger.warn({ category }, '[PolymarketService] Unknown category, using direct search');
-      return this.searchMarkets(category, limit);
-    }
-
-    const allMarkets: PolymarketMarket[] = [];
-    const seenIds = new Set<string>();
-
-    // Search using category-specific terms
-    for (const searchTerm of config.searchTerms.slice(0, 4)) {
-      try {
-        const markets = await this.getMarkets({ query: searchTerm, active: true, limit: limit });
-        for (const market of markets) {
-          if (!seenIds.has(market.condition_id)) {
-            // CRITICAL: Verify the market actually belongs to this category
-            if (this.verifyCategoryMatch(market, category)) {
-              seenIds.add(market.condition_id);
-              allMarkets.push(market);
-            }
-          }
-        }
-      } catch (error) {
-        logger.warn({ error, searchTerm }, '[PolymarketService] Category search query failed');
-      }
-    }
-
-    logger.info({ category, found: allMarkets.length, limit },
-      '[PolymarketService] Category search completed with verification');
-
-    // Sort by volume and return top results
-    return allMarkets
-      .sort((a, b) => (b.volume_num || 0) - (a.volume_num || 0))
-      .slice(0, limit);
+  private getCategoryKeywords(category: string): { include: string[], exclude: string[] } {
+    return PolymarketService.CATEGORY_KEYWORDS[category.toLowerCase()] ||
+           { include: [category.toLowerCase()], exclude: [] };
   }
 
   // ============================================================
-  // EVENTS API METHODS (RECOMMENDED APPROACH)
+  // FIXED CATEGORY FETCHING - LARGE POOL FIRST, THEN FILTER
   // ============================================================
 
   /**
-   * Fetch events from Polymarket using the Events API
-   * This is the RECOMMENDED approach as Events contain Markets and provide better metadata
+   * FIXED: Get markets by category
+   *
+   * OLD BROKEN FLOW:
+   *   Fetch 10 with tag -> Date filter (10->1) -> Category verify (1->0) -> Empty
+   *
+   * NEW WORKING FLOW:
+   *   Fetch 150+ all markets -> Category keywords (150->25) -> Date filter (25->22) -> Return top N
    */
-  async getEvents(options: {
-    limit?: number;
-    offset?: number;
-    tagId?: string;
-    minVolume?: number;
-    sortBy?: 'volume' | 'volume24hr' | 'liquidity';
-    includeResolved?: boolean;
-  } = {}): Promise<any[]> {
-    const {
-      limit = 50,
-      offset = 0,
-      tagId,
-      minVolume,
-      sortBy = 'volume24hr',
-      includeResolved = false
-    } = options;
+  async getMarketsByCategory(category: string, limit = 20): Promise<PolymarketMarket[]> {
+    const categoryLower = category.toLowerCase().trim();
 
+    logger.info({ category: categoryLower, limit },
+      '[PolymarketService] getMarketsByCategory START');
+
+    // STEP 1: Fetch ALL active markets (no category/tag filter)
+    // This is the key fix - get a large pool first
+    const allMarkets = await this.fetchActiveMarketsNoFilter(200);
+
+    logger.info({
+      count: allMarkets.length,
+      sampleQuestions: allMarkets.slice(0, 3).map(m => m.question?.slice(0, 50))
+    }, '[PolymarketService] Fetched all active markets');
+
+    if (allMarkets.length === 0) {
+      logger.error('[PolymarketService] API returned no markets - check connectivity');
+      return [];
+    }
+
+    // STEP 2: Filter by category keywords FIRST (before date filter)
+    const categoryFiltered = this.filterByCategoryKeywords(allMarkets, categoryLower);
+
+    logger.info({
+      category: categoryLower,
+      beforeCount: allMarkets.length,
+      afterCount: categoryFiltered.length,
+      sampleMatches: categoryFiltered.slice(0, 3).map(m => m.question?.slice(0, 50))
+    }, '[PolymarketService] After category keyword filter');
+
+    if (categoryFiltered.length === 0) {
+      const keywords = this.getCategoryKeywords(categoryLower);
+      logger.warn({
+        category: categoryLower,
+        searchedKeywords: keywords.include.slice(0, 10),
+        excludedKeywords: keywords.exclude.slice(0, 5)
+      }, '[PolymarketService] No markets matched category keywords');
+      return [];
+    }
+
+    // STEP 3: Apply LENIENT date filter (only remove clearly expired > 24h ago)
+    const dateFiltered = this.applyLenientDateFilter(categoryFiltered);
+
+    logger.info({
+      beforeCount: categoryFiltered.length,
+      afterCount: dateFiltered.length
+    }, '[PolymarketService] After lenient date filter');
+
+    // STEP 4: Sort by volume descending
+    const sorted = dateFiltered.sort((a, b) =>
+      (b.volume_num || 0) - (a.volume_num || 0)
+    );
+
+    // STEP 5: Return requested limit
+    const result = sorted.slice(0, limit);
+
+    logger.info({
+      category: categoryLower,
+      returnCount: result.length,
+      topMarket: result[0]?.question?.slice(0, 60)
+    }, '[PolymarketService] getMarketsByCategory COMPLETE');
+
+    return result;
+  }
+
+  /**
+   * Fetch active markets WITHOUT any tag/category filtering
+   * This ensures we always get a large pool to filter from
+   */
+  private async fetchActiveMarketsNoFilter(limit: number = 150): Promise<PolymarketMarket[]> {
     const params = new URLSearchParams({
-      limit: Math.min(limit, 100).toString(),
-      offset: offset.toString(),
-      order: sortBy,
-      ascending: 'false',
       active: 'true',
-      closed: includeResolved ? 'true' : 'false',
+      closed: 'false',
+      limit: limit.toString(),
+      order: 'volume24hr',
+      ascending: 'false'
     });
 
-    // CRITICAL: Add tag_id filter for category-based queries
-    if (tagId) {
-      params.append('tag_id', tagId);
-    }
+    const url = `${GAMMA_API_HOST}/markets?${params.toString()}`;
 
-    // Add end_date_min to filter out past events
-    if (!includeResolved) {
-      params.append('end_date_min', new Date().toISOString());
-    }
-
-    // Add volume filter
-    if (minVolume) {
-      params.append('volume_num_min', minVolume.toString());
-    }
-
-    const url = `${GAMMA_API_HOST}/events?${params}`;
-    logger.debug(`[PolymarketService] Fetching events: ${url}`);
+    logger.debug({ url }, '[PolymarketService] fetchActiveMarketsNoFilter');
 
     try {
       const response = await safeFetch(url);
+
       if (!response || !response.ok) {
-        logger.warn(`[PolymarketService] Events API returned ${response?.status || 'null'}`);
+        logger.error({
+          status: response?.status,
+          statusText: response?.statusText
+        }, '[PolymarketService] API error in fetchActiveMarketsNoFilter');
         return [];
       }
 
-      const events = await response.json();
-      logger.info({ eventCount: events?.length, tagId }, '[PolymarketService] Fetched events');
+      const rawMarkets = await response.json();
 
-      return Array.isArray(events) ? events : [];
+      logger.debug({
+        count: rawMarkets?.length,
+        firstMarket: rawMarkets?.[0]?.question?.slice(0, 50)
+      }, '[PolymarketService] Raw API response');
+
+      return this.parseMarkets(rawMarkets || []);
+
     } catch (error) {
-      logger.error('[PolymarketService] Failed to fetch events:', error);
+      logger.error({ error: String(error) }, '[PolymarketService] fetchActiveMarketsNoFilter failed');
       return [];
     }
   }
 
   /**
-   * Extract markets from events
+   * Filter markets by category using keyword matching
+   * This is more reliable than tag-based filtering
    */
-  private extractMarketsFromEvents(events: any[]): PolymarketMarket[] {
-    const allMarkets: PolymarketMarket[] = [];
-    const seenIds = new Set<string>();
+  private filterByCategoryKeywords(markets: PolymarketMarket[], category: string): PolymarketMarket[] {
+    const config = this.getCategoryKeywords(category);
 
-    for (const event of events) {
-      if (!event.markets || !Array.isArray(event.markets)) continue;
-
-      for (const m of event.markets) {
-        const conditionId = m.conditionId || m.condition_id;
-        if (!conditionId || seenIds.has(conditionId)) continue;
-
-        // Validate market is tradeable
-        const endDate = new Date(m.endDate || m.end_date_iso || '');
-        if (endDate < new Date()) continue;
-
-        // Check prices aren't extreme (already resolved)
-        try {
-          const prices = JSON.parse(m.outcomePrices || '["0.5", "0.5"]');
-          const yesPrice = parseFloat(prices[0]);
-          if (yesPrice <= 0.02 || yesPrice >= 0.98) continue;
-        } catch {
-          // Skip if can't parse
-        }
-
-        seenIds.add(conditionId);
-
-        // Convert to PolymarketMarket format
-        const market: PolymarketMarket = {
-          condition_id: conditionId,
-          question_id: m.questionId || m.question_id,
-          question: m.question || event.title || '',
-          description: m.description || event.description || '',
-          market_slug: m.slug || m.market_slug || '',
-          end_date_iso: m.endDate || m.end_date_iso || '',
-          game_start_time: m.gameStartTime,
-          tokens: this.parseTokens(m),
-          active: m.active ?? true,
-          closed: m.closed ?? false,
-          archived: m.archived ?? false,
-          accepting_orders: m.acceptingOrders ?? true,
-          minimum_order_size: parseFloat(m.minimumOrderSize || '1'),
-          minimum_tick_size: parseFloat(m.minimumTickSize || '0.01'),
-          neg_risk: m.negRisk ?? false,
-          volume: parseFloat(m.volume || '0'),
-          volume_num: parseFloat(m.volumeNum || m.volume || '0'),
-          liquidity: parseFloat(m.liquidityNum || m.liquidity || '0'),
-          spread: parseFloat(m.spread || '0'),
-        };
-
-        allMarkets.push(market);
-      }
+    if (config.include.length === 0) {
+      logger.warn({ category }, '[PolymarketService] No keywords defined for category');
+      return markets;
     }
 
-    return allMarkets;
+    return markets.filter(market => {
+      const text = (market.question || '').toLowerCase();
+
+      // Must match at least one include keyword
+      const matchedInclude = config.include.find(kw => text.includes(kw));
+      if (!matchedInclude) return false;
+
+      // Must NOT match any exclude keyword
+      const matchedExclude = config.exclude.find(kw => text.includes(kw));
+      if (matchedExclude) {
+        logger.debug({
+          question: market.question?.slice(0, 40),
+          excludedBy: matchedExclude
+        }, '[PolymarketService] Excluded market');
+        return false;
+      }
+
+      return true;
+    });
   }
 
   /**
-   * Get sports markets using the dedicated /sports endpoint for tag IDs
-   * This is the CORRECT way to fetch sports markets
+   * Lenient date filter - only removes markets that ended > 24h ago
+   * This prevents filtering out markets that are "ending soon" or "awaiting resolution"
+   */
+  private applyLenientDateFilter(markets: PolymarketMarket[]): PolymarketMarket[] {
+    const now = new Date();
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    return markets.filter(market => {
+      // If no end date, include it
+      if (!market.end_date_iso) return true;
+
+      try {
+        const endDate = new Date(market.end_date_iso);
+        // Only exclude if ended more than 1 day ago
+        return endDate > oneDayAgo;
+      } catch {
+        return true; // Include on parse error
+      }
+    });
+  }
+
+  // ============================================================
+  // CATEGORY-SPECIFIC METHODS (use fixed getMarketsByCategory)
+  // ============================================================
+
+  /**
+   * Get sports markets
    */
   async getSportsMarkets(limit = 20): Promise<PolymarketMarket[]> {
-    const allMarkets: PolymarketMarket[] = [];
-    const seenIds = new Set<string>();
-
-    // Get sports-specific tag IDs
-    let sportsTagIds: string[] = [];
-
-    if (this.tagManager) {
-      sportsTagIds = this.tagManager.getSportsTagIds();
-    }
-
-    if (sportsTagIds.length === 0) {
-      // Fallback: fetch from /sports endpoint directly
-      try {
-        const response = await safeFetch(`${GAMMA_API_HOST}/sports`);
-        if (response && response.ok) {
-          const sports = await response.json();
-          for (const sport of sports) {
-            if (sport.tags) {
-              const tags = typeof sport.tags === 'string'
-                ? sport.tags.split(',').map((t: string) => t.trim())
-                : [sport.tags];
-              sportsTagIds.push(...tags);
-            }
-          }
-          sportsTagIds = [...new Set(sportsTagIds)];
-        }
-      } catch (error) {
-        logger.warn('[PolymarketService] Failed to fetch sports tags:', error);
-      }
-    }
-
-    logger.info({ tagCount: sportsTagIds.length }, '[PolymarketService] Sports tag IDs');
-
-    // Fetch events for each sports tag (limit to prevent too many API calls)
-    for (const tagId of sportsTagIds.slice(0, 5)) {
-      try {
-        const events = await this.getEvents({ tagId, limit: limit * 2 });
-        const markets = this.extractMarketsFromEvents(events);
-
-        for (const market of markets) {
-          if (!seenIds.has(market.condition_id)) {
-            // Verify it's actually a sports market
-            if (this.verifyCategoryMatch(market, 'sports')) {
-              seenIds.add(market.condition_id);
-              allMarkets.push(market);
-            }
-          }
-        }
-      } catch (error) {
-        logger.warn({ tagId, error }, '[PolymarketService] Failed to fetch sports tag');
-      }
-    }
-
-    // If we didn't get enough from Events API, fallback to keyword search
-    if (allMarkets.length < 5) {
-      logger.info('[PolymarketService] Supplementing sports with keyword search');
-      const keywordMarkets = await this.getMarketsByCategory('sports', limit);
-      for (const market of keywordMarkets) {
-        if (!seenIds.has(market.condition_id)) {
-          seenIds.add(market.condition_id);
-          allMarkets.push(market);
-        }
-      }
-    }
-
-    logger.info({ found: allMarkets.length }, '[PolymarketService] Sports markets fetched');
-
-    // Sort by volume and return
-    return allMarkets
-      .sort((a, b) => (b.volume_num || 0) - (a.volume_num || 0))
-      .slice(0, limit);
+    logger.info({ limit }, '[PolymarketService] getSportsMarkets');
+    return this.getMarketsByCategory('sports', limit);
   }
 
   /**
    * Get crypto markets
    */
   async getCryptoMarkets(limit = 20): Promise<PolymarketMarket[]> {
-    return this.getMarketsByCategoryWithTags('crypto', limit);
+    logger.info({ limit }, '[PolymarketService] getCryptoMarkets');
+    return this.getMarketsByCategory('crypto', limit);
   }
 
   /**
    * Get politics markets
    */
   async getPoliticsMarkets(limit = 20): Promise<PolymarketMarket[]> {
-    return this.getMarketsByCategoryWithTags('politics', limit);
+    logger.info({ limit }, '[PolymarketService] getPoliticsMarkets');
+    return this.getMarketsByCategory('politics', limit);
   }
 
   /**
    * Get economics/finance markets
    */
   async getEconomicsMarkets(limit = 20): Promise<PolymarketMarket[]> {
-    return this.getMarketsByCategoryWithTags('economics', limit);
+    logger.info({ limit }, '[PolymarketService] getEconomicsMarkets');
+    return this.getMarketsByCategory('economics', limit);
   }
 
   /**
-   * Get markets by category using TagManager for proper tag_id filtering
+   * Get tech markets
    */
-  private async getMarketsByCategoryWithTags(category: string, limit = 20): Promise<PolymarketMarket[]> {
-    const allMarkets: PolymarketMarket[] = [];
-    const seenIds = new Set<string>();
-
-    // Get tag IDs from TagManager
-    const tagIds = this.tagManager?.getTagIdsForCategory(category) || [];
-
-    logger.info({ category, tagCount: tagIds.length }, '[PolymarketService] Category tag IDs');
-
-    // Fetch events for each tag
-    for (const tagId of tagIds.slice(0, 3)) {
-      try {
-        const events = await this.getEvents({ tagId, limit: limit * 2 });
-        const markets = this.extractMarketsFromEvents(events);
-
-        for (const market of markets) {
-          if (!seenIds.has(market.condition_id)) {
-            if (this.verifyCategoryMatch(market, category)) {
-              seenIds.add(market.condition_id);
-              allMarkets.push(market);
-            }
-          }
-        }
-      } catch (error) {
-        logger.warn({ tagId, error }, '[PolymarketService] Failed to fetch category tag');
-      }
-    }
-
-    // If we didn't get enough, supplement with keyword search
-    if (allMarkets.length < 5) {
-      logger.info({ category }, '[PolymarketService] Supplementing with keyword search');
-      const keywordMarkets = await this.getMarketsByCategory(category, limit);
-      for (const market of keywordMarkets) {
-        if (!seenIds.has(market.condition_id)) {
-          seenIds.add(market.condition_id);
-          allMarkets.push(market);
-        }
-      }
-    }
-
-    return allMarkets
-      .sort((a, b) => (b.volume_num || 0) - (a.volume_num || 0))
-      .slice(0, limit);
+  async getTechMarkets(limit = 20): Promise<PolymarketMarket[]> {
+    logger.info({ limit }, '[PolymarketService] getTechMarkets');
+    return this.getMarketsByCategory('tech', limit);
   }
 
   /**
-   * Get top markets by 24h volume
+   * Get top markets by 24h volume (no category filter)
    */
   async getTopMarketsByVolume24h(limit = 20): Promise<PolymarketMarket[]> {
-    const events = await this.getEvents({
-      limit: limit * 2,
-      sortBy: 'volume24hr',
-      minVolume: 10000
-    });
+    const markets = await this.fetchActiveMarketsNoFilter(limit * 2);
 
-    const markets = this.extractMarketsFromEvents(events);
+    // Apply lenient date filter
+    const dateFiltered = this.applyLenientDateFilter(markets);
 
-    return markets
+    return dateFiltered
       .sort((a, b) => (b.volume_num || 0) - (a.volume_num || 0))
       .slice(0, limit);
   }
@@ -898,8 +918,8 @@ export class PolymarketService extends Service {
   } = {}): Promise<PolymarketMarket[]> {
     const { minVolume = 10000, minLiquidity = 1000, limit = 20, sortBy = 'volume' } = options;
 
-    // Fetch more markets to filter from
-    const markets = await this.getMarkets({ active: true, limit: 100 });
+    // Use the new fetchActiveMarketsNoFilter to get a large pool
+    const markets = await this.fetchActiveMarketsNoFilter(150);
 
     // Filter by volume and liquidity thresholds
     let filtered = markets.filter(m => {
@@ -907,6 +927,9 @@ export class PolymarketService extends Service {
       const liquidity = m.liquidity || 0;
       return volume >= minVolume && liquidity >= minLiquidity;
     });
+
+    // Apply lenient date filter
+    filtered = this.applyLenientDateFilter(filtered);
 
     // Sort by specified metric
     filtered.sort((a, b) => {

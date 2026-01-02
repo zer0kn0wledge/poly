@@ -538,6 +538,8 @@ export const viewMarketsAction: Action = {
                                 text.toLowerCase().includes('deep') ||
                                 text.toLowerCase().includes('analysis') ||
                                 isSingleMarket;
+      // Use brief format for lists of 4+ markets unless user specifically wants details
+      const useBriefFormat = markets.length >= 4 && !wantsDeepAnalysis;
 
       // Format markets - use comprehensive format for single/deep, brief for lists
       let formattedMarkets: string[];
@@ -556,8 +558,11 @@ export const viewMarketsAction: Action = {
             formattedMarkets.push(baseFormat);
           }
         }
+      } else if (useBriefFormat) {
+        // For 4+ markets, use brief format to keep output manageable
+        formattedMarkets = markets.map((m, i) => formatMarketBrief(m, i + 1));
       } else {
-        // For multiple markets, use detailed format but not deep analysis
+        // For 2-3 markets, use detailed format but not deep analysis
         formattedMarkets = markets.map((m, i) => formatMarketDetailed(m, i + 1, true));
       }
 
