@@ -1,7 +1,8 @@
-FROM node:23.3.0-slim AS builder
+FROM node:22.12.0-slim AS builder
 
 WORKDIR /app
 
+# Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     build-essential \
@@ -11,10 +12,12 @@ RUN apt-get update && \
     git \
     make \
     python3 \
-    unzip && \
+    unzip \
+    ca-certificates && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Install bun and turbo with latest stable versions
 RUN npm install -g bun@1.2.21 turbo@2.3.3
 
 RUN ln -s /usr/bin/python3 /usr/bin/python
@@ -34,20 +37,23 @@ RUN echo "=== Build Environment Info ===" && \
     echo "=== Starting Build ===" && \
     TURBO_CONCURRENCY=2 bun run build --concurrency=2 --verbosity=1 || (echo "=== Build Failed - System State ===" && df -h / && exit 1)
 
-FROM node:23.3.0-slim
+FROM node:22.12.0-slim
 
 WORKDIR /app
 
+# Install runtime dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     curl \
     ffmpeg \
     git \
     python3 \
-    unzip && \
+    unzip \
+    ca-certificates && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Install bun and turbo
 RUN npm install -g bun@1.2.21 turbo@2.3.3
 
 COPY --from=builder /app/package.json ./

@@ -25,6 +25,8 @@ import { SignalGeneratorService, type TradingSignal } from '../services/signal-g
 import { LLMService } from '../services/llm';
 import { TwitterService } from '../services/twitter';
 import type { PolymarketMarket } from '../types';
+import { getCurrentETTime, isMarketExpired, detectPastYearMarket, getRelativeTimeContext } from '../providers/timezone';
+import { newsProvider } from '../providers/news';
 
 // Type for IPostService (avoid direct import to keep plugin standalone)
 interface PostContent {
@@ -69,6 +71,12 @@ interface TradeDecision {
 const analysisPrompt = `You are an expert prediction market trader analyzing Polymarket opportunities.
 You use fundamental analysis, news, and market data to find mispriced opportunities.
 
+CURRENT DATE/TIME CONTEXT:
+- Today: {{currentDate}}
+- Time: {{currentTime}} ET (US Eastern Time)
+- Current Year: {{currentYear}}
+- CRITICAL: Markets referencing years before {{currentYear}} have already resolved. Do NOT trade expired markets.
+
 Current Portfolio:
 {{portfolio}}
 
@@ -83,13 +91,16 @@ Active Markets to Analyze:
 {{markets}}
 
 Your task:
-1. Analyze each market for trading opportunities
-2. Use the news context to inform your probability estimates
-3. Look for mispriced markets where your estimate differs significantly (>10%) from current odds
-4. Consider recent developments that the market may not have priced in yet
-5. Be conservative - only recommend trades with high confidence
+1. FIRST: Verify each market is still relevant given today's date ({{currentDate}})
+2. Skip any markets that reference past years or have already ended
+3. Analyze remaining markets for trading opportunities
+4. Use the news context to inform your probability estimates
+5. Look for mispriced markets where your estimate differs significantly (>10%) from current odds
+6. Consider recent developments that the market may not have priced in yet
+7. Be conservative - only recommend trades with high confidence
 
 For each market, evaluate:
+- Is this market still active and relevant as of {{currentDate}}?
 - What does recent news tell us about the likely outcome?
 - Is the current price accurate based on all available information?
 - Is there a clear edge (>10% mispricing)?
@@ -98,13 +109,13 @@ For each market, evaluate:
 Respond with JSON:
 {
   "shouldTrade": boolean,
-  "marketAnalysis": "Overall market conditions and key news insights",
+  "marketAnalysis": "Overall market conditions and key news insights (considering current date: {{currentDate}})",
   "opportunities": [
     {
       "marketQuestion": "The market question",
       "signal": "BUY_YES" | "BUY_NO" | "HOLD",
       "confidence": 0-100,
-      "reasoning": "Why this trade makes sense, citing specific news or data",
+      "reasoning": "Why this trade makes sense, citing specific news or data and confirming market is still active",
       "currentPrice": 0.XX,
       "targetPrice": 0.XX,
       "suggestedSize": dollar amount
@@ -113,6 +124,7 @@ Respond with JSON:
 }
 
 Only include opportunities where confidence > 70 and signal is not HOLD.
+NEVER recommend trades on markets that have already expired or reference past events.
 Be selective - it's better to make no trade than a bad trade.`;
 
 /**
@@ -124,8 +136,39 @@ async function analyzeMarkets(
   message: Memory
 ): Promise<TradeDecision> {
   try {
+    // Get current date/time context
+    const etTime = getCurrentETTime();
+
     // Fetch active markets
-    const markets = await service.getMarkets({ active: true, limit: 20 });
+    const rawMarkets = await service.getMarkets({ active: true, limit: 20 });
+
+    // Filter out expired markets and past-year markets
+    const markets = rawMarkets.filter((market) => {
+      // Check if market end date has passed
+      if (isMarketExpired(market.end_date_iso)) {
+        logger.debug({ market: market.question }, '[TradingEvaluator] Skipping expired market');
+        return false;
+      }
+
+      // Check if market question references a past year
+      const pastYearCheck = detectPastYearMarket(market.question, etTime.year);
+      if (pastYearCheck.isPast) {
+        logger.debug(
+          { market: market.question, mentionedYear: pastYearCheck.mentionedYear },
+          '[TradingEvaluator] Skipping market referencing past year'
+        );
+        return false;
+      }
+
+      return true;
+    });
+
+    logger.info('[TradingEvaluator] Market filtering:', {
+      rawCount: rawMarkets.length,
+      validCount: markets.length,
+      filteredOut: rawMarkets.length - markets.length,
+      currentDate: etTime.dateStr,
+    });
 
     // Get portfolio status
     const portfolio = await service.getPortfolio();
@@ -134,21 +177,23 @@ async function analyzeMarkets(
     // Get news context from news provider
     let newsContext = '';
     try {
-      newsContext = await newsProvider.get(runtime, message);
+      const newsResult = await newsProvider.get(runtime, message, undefined);
+      newsContext = typeof newsResult === 'string' ? newsResult : newsResult?.text || '';
     } catch (error) {
       logger.debug({ error }, '[TradingEvaluator] Failed to get news context');
       newsContext = '## News Context\nNo recent news available. Analyze based on market data only.';
     }
 
-    // Format markets for analysis
+    // Format markets for analysis with time context
     const marketsText = markets.slice(0, 10).map((m, i) => {
       const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
       const noToken = m.tokens.find(t => t.outcome.toLowerCase() === 'no');
+      const timeContext = m.end_date_iso ? getRelativeTimeContext(new Date(m.end_date_iso)) : 'Unknown';
       return `${i + 1}. "${m.question}"
    - Yes: ${((yesToken?.price ?? 0.5) * 100).toFixed(1)}%
    - No: ${((noToken?.price ?? 0.5) * 100).toFixed(1)}%
    - Volume: $${m.volume_num.toLocaleString()}
-   - End Date: ${m.end_date_iso}`;
+   - End Date: ${m.end_date_iso} (${timeContext})`;
     }).join('\n\n');
 
     // Format portfolio
@@ -159,6 +204,9 @@ Unrealized P&L: ${portfolio.unrealizedPnl >= 0 ? '+' : ''}$${portfolio.unrealize
 Open Positions: ${portfolio.positions.length}`;
 
     const prompt = analysisPrompt
+      .replace(/\{\{currentDate\}\}/g, `${etTime.dayOfWeek}, ${etTime.dateStr}`)
+      .replace(/\{\{currentTime\}\}/g, etTime.timeStr)
+      .replace(/\{\{currentYear\}\}/g, etTime.year.toString())
       .replace('{{portfolio}}', portfolioText)
       .replace('{{maxPositionSize}}', riskSettings.maxPositionSize.toString())
       .replace('{{maxPortfolioRisk}}', riskSettings.maxPortfolioRisk.toString())

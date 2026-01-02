@@ -13,6 +13,7 @@ import { DataSourcesService, type MarketSignal, type NewsItem } from './data-sou
 import { TwitterMonitorService, type TwitterAlert } from './twitter-monitor';
 import { PolymarketService } from './polymarket';
 import type { PolymarketMarket } from '../types';
+import { getCurrentETTime, isMarketExpired, detectPastYearMarket, getRelativeTimeContext } from '../providers/timezone';
 
 export interface TradingSignal {
   id: string;
@@ -83,7 +84,14 @@ export class SignalGeneratorService extends Service {
       return [];
     }
 
-    logger.info('[SignalGenerator] Starting signal generation cycle');
+    // Get current date/time context
+    const etTime = getCurrentETTime();
+    logger.info('[SignalGenerator] Starting signal generation cycle', {
+      currentDate: etTime.dateStr,
+      currentTime: etTime.timeStr,
+      timezone: 'ET',
+      currentYear: etTime.year,
+    });
 
     // Get services
     const dataService = this.runtime.getService<DataSourcesService>('data-sources');
@@ -96,14 +104,37 @@ export class SignalGeneratorService extends Service {
     }
 
     // Gather all data in parallel
-    const [markets, marketSignals, twitterAlerts] = await Promise.all([
+    const [rawMarkets, marketSignals, twitterAlerts] = await Promise.all([
       polymarketService.getMarkets({ active: true, limit: 30 }),
       dataService?.getMarketSignals() || [],
       twitterService?.scanForAlerts(['crypto', 'politics', 'sports']) || [],
     ]);
 
+    // Filter out expired markets and markets from past years
+    const markets = rawMarkets.filter((market) => {
+      // Check if market end date has passed
+      if (isMarketExpired(market.end_date_iso)) {
+        logger.debug({ market: market.question }, '[SignalGenerator] Skipping expired market');
+        return false;
+      }
+
+      // Check if market question references a past year
+      const pastYearCheck = detectPastYearMarket(market.question, etTime.year);
+      if (pastYearCheck.isPast) {
+        logger.debug(
+          { market: market.question, mentionedYear: pastYearCheck.mentionedYear },
+          '[SignalGenerator] Skipping market referencing past year'
+        );
+        return false;
+      }
+
+      return true;
+    });
+
     logger.info('[SignalGenerator] Data gathered:', {
-      markets: markets.length,
+      rawMarkets: rawMarkets.length,
+      validMarkets: markets.length,
+      expiredFiltered: rawMarkets.length - markets.length,
       signals: marketSignals.length,
       alerts: twitterAlerts.length,
     });
@@ -228,9 +259,17 @@ export class SignalGeneratorService extends Service {
 
     const { market, relevantSignals, relevantAlerts } = match;
 
+    // Get current date/time context
+    const etTime = getCurrentETTime();
+
     // Get current price
     const yesToken = market.tokens.find((t) => t.outcome.toLowerCase() === 'yes');
     const currentYesPrice = yesToken?.price || 0.5;
+
+    // Calculate time until market resolution
+    const timeContext = market.end_date_iso
+      ? getRelativeTimeContext(new Date(market.end_date_iso))
+      : 'Unknown end date';
 
     // Format data for LLM
     const newsContext = relevantSignals
@@ -249,10 +288,17 @@ export class SignalGeneratorService extends Service {
 
     const prompt = `You are an expert prediction market trader. Analyze this market and determine if there's a trading opportunity.
 
+CURRENT DATE/TIME CONTEXT:
+- Today: ${etTime.dayOfWeek}, ${etTime.dateStr}
+- Time: ${etTime.timeStr} ET (US Eastern Time)
+- Current Year: ${etTime.year}
+- This is critical: Any market referencing years before ${etTime.year} has already resolved or expired.
+
 MARKET: "${market.question}"
 Current YES price: ${(currentYesPrice * 100).toFixed(1)}% (NO: ${((1 - currentYesPrice) * 100).toFixed(1)}%)
 Volume: $${market.volume_num?.toLocaleString() || 'N/A'}
 End Date: ${market.end_date_iso || 'Unknown'}
+Time Until Resolution: ${timeContext}
 
 RECENT NEWS:
 ${newsContext || 'No relevant news'}
@@ -264,9 +310,10 @@ PRICE MOVEMENTS:
 ${priceContext || 'No significant price movements'}
 
 ANALYSIS REQUIRED:
-1. Based on the data above, what is your estimated TRUE probability of YES?
-2. Is there meaningful edge (>10% difference from current price)?
-3. What is your confidence in this analysis?
+1. First, verify the market is still relevant given today's date (${etTime.dateStr})
+2. Based on the data above, what is your estimated TRUE probability of YES?
+3. Is there meaningful edge (>10% difference from current price)?
+4. What is your confidence in this analysis?
 
 Respond with JSON:
 {
@@ -274,10 +321,11 @@ Respond with JSON:
   "direction": "BUY_YES" | "BUY_NO" | "HOLD",
   "confidence": 0-100,
   "edge": percentage points of estimated edge,
-  "reasoning": "Clear explanation citing specific data points"
+  "reasoning": "Clear explanation citing specific data points and considering current date context"
 }
 
-Be conservative. Only recommend trades with clear edge supported by multiple data points.`;
+Be conservative. Only recommend trades with clear edge supported by multiple data points.
+If the market references past events or dates that have already occurred, return HOLD with 0 confidence.`;
 
     try {
       const response = await this.runtime.useModel(ModelType.OBJECT_LARGE, {
