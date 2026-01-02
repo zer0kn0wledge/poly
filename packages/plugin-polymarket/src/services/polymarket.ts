@@ -299,26 +299,39 @@ export class PolymarketService extends Service {
       // Filter out markets that aren't tradeable
       // Be less aggressive - trust API flags and only filter obvious cases
       const beforeFilter = markets.length;
+
+      // Log raw market data for first few markets to debug
+      logger.info({
+        sampleMarkets: markets.slice(0, 3).map(m => ({
+          question: m.question.slice(0, 60),
+          closed: m.closed,
+          archived: m.archived,
+          end_date_iso: m.end_date_iso,
+          tokenCount: m.tokens?.length,
+          hasTokenId: m.tokens?.some(t => t.token_id)
+        }))
+      }, '[PolymarketService] Sample raw market data before filtering');
+
       markets = markets.filter(m => {
         // Must be active and not closed (trust API flags)
         if (m.closed || m.archived) {
-          logger.debug({ question: m.question.slice(0, 50) },
-            '[PolymarketService] Market filtered: closed/archived');
+          logger.info({ question: m.question.slice(0, 50), closed: m.closed, archived: m.archived },
+            '[PolymarketService] FILTERED: closed/archived');
           return false;
         }
 
         // Filter out clearly expired markets (end date in the past)
         if (m.end_date_iso && isMarketExpired(m.end_date_iso)) {
-          logger.debug({ question: m.question.slice(0, 50), endDate: m.end_date_iso },
-            '[PolymarketService] Market filtered: expired');
+          logger.info({ question: m.question.slice(0, 50), endDate: m.end_date_iso },
+            '[PolymarketService] FILTERED: expired end_date');
           return false;
         }
 
         // Only filter markets that EXCLUSIVELY mention past years
         const pastYearCheck = detectPastYearMarket(m.question, currentYear);
         if (pastYearCheck.isPast) {
-          logger.debug({ question: m.question.slice(0, 50), mentionedYear: pastYearCheck.mentionedYear },
-            '[PolymarketService] Market filtered: only past years');
+          logger.info({ question: m.question.slice(0, 50), mentionedYear: pastYearCheck.mentionedYear },
+            '[PolymarketService] FILTERED: only past years');
           return false;
         }
 
@@ -326,11 +339,12 @@ export class PolymarketService extends Service {
         // Don't be too strict on format since API might change
         const hasTokens = m.tokens && m.tokens.length > 0 && m.tokens.some(t => t.token_id);
         if (!hasTokens) {
-          logger.debug({ question: m.question.slice(0, 50) },
-            '[PolymarketService] Market filtered: no tokens');
+          logger.info({ question: m.question.slice(0, 50), tokens: m.tokens },
+            '[PolymarketService] FILTERED: no valid tokens');
           return false;
         }
 
+        logger.info({ question: m.question.slice(0, 50) }, '[PolymarketService] PASSED filter');
         return true;
       });
 

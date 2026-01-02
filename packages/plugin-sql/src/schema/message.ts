@@ -10,9 +10,8 @@ export const messageTable = pgTable('central_messages', {
   authorId: text('author_id').notNull(),
   content: text('content').notNull(),
   rawMessage: jsonb('raw_message'),
-  inReplyToRootMessageId: text('in_reply_to_root_message_id').references(() => messageTable.id, {
-    onDelete: 'set null',
-  }),
+  // FK removed to avoid self-referential constraint issues with message ordering
+  inReplyToRootMessageId: text('in_reply_to_root_message_id'),
   sourceType: text('source_type').default(''),
   sourceId: text('source_id').default(''),
   metadata: jsonb('metadata'),

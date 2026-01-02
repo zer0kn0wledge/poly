@@ -3539,6 +3539,8 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<any> {
 
       // Always include sourceType/sourceId with explicit empty string fallback
       // This avoids Drizzle's `default` keyword which some DBs don't handle well
+      // NOTE: inReplyToRootMessageId intentionally omitted - FK constraint causes issues
+      // when messages are created before their parent messages exist
       const messageToInsert = {
         id: newId,
         channelId: data.channelId,
@@ -3548,7 +3550,6 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<any> {
         sourceType: data.sourceType || '',
         sourceId: data.sourceId || '',
         metadata: data.metadata,
-        inReplyToRootMessageId: data.inReplyToRootMessageId,
         createdAt: now,
         updatedAt: now,
       };
