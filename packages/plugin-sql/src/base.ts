@@ -3537,11 +3537,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<any> {
       const newId = data.messageId || (v4() as UUID);
       const now = new Date();
 
-      // Always include sourceType/sourceId with explicit empty string fallback
-      // This avoids Drizzle's `default` keyword which some DBs don't handle well
-      // NOTE: inReplyToRootMessageId intentionally omitted - FK constraint causes issues
-      // when messages are created before their parent messages exist
-      const messageToInsert = {
+      // Always include all columns with explicit values to avoid Drizzle using 'default' keyword
+      // which some databases don't handle well when no default is defined
+      // Use null for DB insert but undefined for return type compatibility
+      const dbValues = {
         id: newId,
         channelId: data.channelId,
         authorId: data.authorId,
@@ -3550,12 +3549,27 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<any> {
         sourceType: data.sourceType || '',
         sourceId: data.sourceId || '',
         metadata: data.metadata,
+        inReplyToRootMessageId: null,
         createdAt: now,
         updatedAt: now,
       };
 
-      await this.db.insert(messageTable).values(messageToInsert);
-      return messageToInsert;
+      await this.db.insert(messageTable).values(dbValues);
+
+      // Return with undefined instead of null for type compatibility
+      return {
+        id: newId,
+        channelId: data.channelId,
+        authorId: data.authorId,
+        content: data.content,
+        rawMessage: data.rawMessage,
+        sourceType: data.sourceType || '',
+        sourceId: data.sourceId || '',
+        metadata: data.metadata,
+        inReplyToRootMessageId: undefined,
+        createdAt: now,
+        updatedAt: now,
+      };
     });
   }
 
