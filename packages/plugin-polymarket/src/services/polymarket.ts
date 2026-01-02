@@ -236,9 +236,13 @@ export class PolymarketService extends Service {
       }
 
       const data = await response.json();
+      logger.debug({ marketCount: data?.length }, '[PolymarketService] Raw markets from API');
+
       let markets = this.parseMarkets(data);
+      logger.debug({ parsedCount: markets.length }, '[PolymarketService] Parsed markets');
 
       // Filter out markets that aren't tradeable
+      const beforeFilter = markets.length;
       markets = markets.filter(m => {
         // Must be active and not closed
         if (!m.active || m.closed || m.archived) return false;
@@ -247,11 +251,12 @@ export class PolymarketService extends Service {
         if (!m.accepting_orders) return false;
 
         // Must have valid token IDs (not synthetic with -0/-1 suffix)
+        // Real clobTokenIds are long numeric strings (50+ chars)
         const hasValidTokens = m.tokens.every(t =>
           t.token_id &&
           !t.token_id.endsWith('-0') &&
           !t.token_id.endsWith('-1') &&
-          t.token_id.length > 10
+          t.token_id.length > 20  // Real token IDs are 70+ chars
         );
         if (!hasValidTokens) return false;
 
@@ -264,6 +269,7 @@ export class PolymarketService extends Service {
         return true;
       });
 
+      logger.info({ beforeFilter, afterFilter: markets.length }, '[PolymarketService] Markets after filtering');
       return markets;
     } catch (error) {
       logger.error({ error }, '[PolymarketService] Failed to fetch markets');
@@ -573,46 +579,35 @@ export class PolymarketService extends Service {
    */
   private parseTokens(m: any): { token_id: string; outcome: string; price: number; winner?: boolean }[] {
     const conditionId = m.conditionId || m.condition_id || '';
+    const outcomeNames = m.outcomes || ['Yes', 'No'];
+    const outcomePrices = m.outcomePrices || [];
 
-    // Try different possible token/outcome structures
-    let rawTokens = m.tokens || m.outcomes || m.clobTokenIds;
-
-    // If it's an array, use it directly
-    if (Array.isArray(rawTokens) && rawTokens.length > 0) {
-      return rawTokens.map((t: any, idx: number) => ({
-        token_id: t.token_id || t.tokenId || t.clobTokenId || t || `${conditionId}-${idx}`,
-        outcome: t.outcome || (idx === 0 ? 'Yes' : 'No'),
-        price: parseFloat(t.price || t.outcomePrices?.[idx] || '0.5'),
-        winner: t.winner,
-      }));
-    }
-
-    // If clobTokenIds is an array of strings
-    if (Array.isArray(m.clobTokenIds)) {
-      const prices = m.outcomePrices || [];
+    // Priority 1: clobTokenIds (Gamma API format) - these are the actual tradeable token IDs
+    if (Array.isArray(m.clobTokenIds) && m.clobTokenIds.length > 0 && m.clobTokenIds[0]) {
       return m.clobTokenIds.map((tokenId: string, idx: number) => ({
         token_id: tokenId,
-        outcome: idx === 0 ? 'Yes' : 'No',
-        price: parseFloat(prices[idx] || '0.5'),
+        outcome: outcomeNames[idx] || (idx === 0 ? 'Yes' : 'No'),
+        price: parseFloat(outcomePrices[idx] || '0.5'),
         winner: undefined,
       }));
     }
 
-    // If it's an object with keys like "0", "1" or "yes", "no"
-    if (rawTokens && typeof rawTokens === 'object' && !Array.isArray(rawTokens)) {
-      const entries = Object.entries(rawTokens);
-      return entries.map(([key, t]: [string, any], idx: number) => ({
-        token_id: t?.token_id || t?.tokenId || t || `${conditionId}-${idx}`,
-        outcome: t?.outcome || key || (idx === 0 ? 'Yes' : 'No'),
-        price: parseFloat(t?.price || '0.5'),
-        winner: t?.winner,
+    // Priority 2: tokens array with proper structure
+    if (Array.isArray(m.tokens) && m.tokens.length > 0) {
+      return m.tokens.map((t: any, idx: number) => ({
+        token_id: t.token_id || t.tokenId || t.clobTokenId || `${conditionId}-${idx}`,
+        outcome: t.outcome || outcomeNames[idx] || (idx === 0 ? 'Yes' : 'No'),
+        price: parseFloat(t.price || outcomePrices[idx] || '0.5'),
+        winner: t.winner,
       }));
     }
 
-    // Generate default tokens if nothing found
+    // Fallback: generate synthetic tokens (these won't be tradeable)
+    logger.warn({ conditionId, hasTokens: !!m.tokens, hasClobTokenIds: !!m.clobTokenIds },
+      '[PolymarketService] No valid token IDs found, generating synthetic (non-tradeable)');
     return [
-      { token_id: `${conditionId}-0`, outcome: 'Yes', price: 0.5 },
-      { token_id: `${conditionId}-1`, outcome: 'No', price: 0.5 },
+      { token_id: `${conditionId}-0`, outcome: outcomeNames[0] || 'Yes', price: parseFloat(outcomePrices[0] || '0.5') },
+      { token_id: `${conditionId}-1`, outcome: outcomeNames[1] || 'No', price: parseFloat(outcomePrices[1] || '0.5') },
     ];
   }
 
