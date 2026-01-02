@@ -15,6 +15,26 @@ import type {
 import { logger } from '@elizaos/core';
 import { PolymarketService } from '../services/polymarket';
 
+/**
+ * Sanitize text to prevent database encoding issues.
+ */
+function sanitizeText(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/[\u{1F600}-\u{1F64F}]/gu, '')
+    .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')
+    .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')
+    .replace(/[\u{1F1E0}-\u{1F1FF}]/gu, '')
+    .replace(/[\u{2600}-\u{26FF}]/gu, '')
+    .replace(/[\u{2700}-\u{27BF}]/gu, '')
+    .replace(/[\u{FE00}-\u{FE0F}]/gu, '')
+    .replace(/[\u{1F900}-\u{1F9FF}]/gu, '')
+    .replace(/[\u{1FA00}-\u{1FA6F}]/gu, '')
+    .replace(/[\u{1FA70}-\u{1FAFF}]/gu, '')
+    .replace(/[^\x00-\x7F]/g, '')
+    .trim();
+}
+
 export const marketDetailsAction: Action = {
   name: 'MARKET_DETAILS',
   similes: [
@@ -141,7 +161,10 @@ export const marketDetailsAction: Action = {
       const statusText = market.active ? 'Active' : market.closed ? 'Closed' : 'Pending';
       const ordersText = market.accepting_orders ? 'Yes' : 'No';
 
-      let responseText = `${market.question}
+      const question = sanitizeText(market.question);
+      const description = market.description ? sanitizeText(market.description) : '';
+
+      let responseText = `${question}
 
 Current Odds:
 - Yes: ${((yesToken?.price ?? 0.5) * 100).toFixed(1)}%${yesToken?.orderBook ? ` (spread: ${(yesToken.orderBook.spread * 100).toFixed(2)}%)` : ''}
@@ -157,8 +180,8 @@ Timeline:
 - End Date: ${endDate.toLocaleDateString()}
 - Days Remaining: ${daysRemaining > 0 ? daysRemaining : 'Ended'}`;
 
-      if (market.description) {
-        responseText += `\n\nDescription:\n${market.description.slice(0, 500)}${market.description.length > 500 ? '...' : ''}`;
+      if (description) {
+        responseText += `\n\nDescription:\n${description.slice(0, 500)}${description.length > 500 ? '...' : ''}`;
       }
 
       if (callback) {

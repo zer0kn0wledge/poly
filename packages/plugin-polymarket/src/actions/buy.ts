@@ -15,6 +15,26 @@ import type {
 import { ModelType, logger } from '@elizaos/core';
 import { PolymarketService } from '../services/polymarket';
 
+/**
+ * Sanitize text to prevent database encoding issues.
+ */
+function sanitizeText(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/[\u{1F600}-\u{1F64F}]/gu, '')
+    .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')
+    .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')
+    .replace(/[\u{1F1E0}-\u{1F1FF}]/gu, '')
+    .replace(/[\u{2600}-\u{26FF}]/gu, '')
+    .replace(/[\u{2700}-\u{27BF}]/gu, '')
+    .replace(/[\u{FE00}-\u{FE0F}]/gu, '')
+    .replace(/[\u{1F900}-\u{1F9FF}]/gu, '')
+    .replace(/[\u{1FA00}-\u{1FA6F}]/gu, '')
+    .replace(/[\u{1FA70}-\u{1FAFF}]/gu, '')
+    .replace(/[^\x00-\x7F]/g, '')
+    .trim();
+}
+
 interface BuyParams {
   marketQuery: string;
   outcome: 'Yes' | 'No';
@@ -243,9 +263,10 @@ JSON:`;
       const shares = params.amount / priceToUse;
 
       // Confirm the trade
+      const marketQuestion = sanitizeText(market.question);
       if (callback) {
         await callback({
-          text: `Placing order to buy ${shares.toFixed(2)} shares of "${outcome}" on "${market.question}" at $${priceToUse.toFixed(4)}/share (total: $${params.amount.toFixed(2)})...`,
+          text: `Placing order to buy ${shares.toFixed(2)} shares of "${outcome}" on "${marketQuestion}" at $${priceToUse.toFixed(4)}/share (total: $${params.amount.toFixed(2)})...`,
         });
       }
 
@@ -263,7 +284,7 @@ JSON:`;
 - Status: ${result.status}
 - Filled: ${result.filledSize.toFixed(2)} shares
 - Remaining: ${result.remainingSize.toFixed(2)} shares
-- Market: ${market.question}
+- Market: ${marketQuestion}
 - Outcome: ${outcome}
 - Price: $${priceToUse.toFixed(4)}/share`;
 

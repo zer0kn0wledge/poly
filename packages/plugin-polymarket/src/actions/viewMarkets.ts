@@ -16,6 +16,28 @@ import { ModelType, generateObject, logger } from '@elizaos/core';
 import { z } from 'zod';
 import { PolymarketService } from '../services/polymarket';
 
+/**
+ * Sanitize text to prevent database encoding issues.
+ * Removes emojis and non-ASCII characters.
+ */
+function sanitizeText(text: string): string {
+  if (!text) return '';
+  // Remove emojis and other non-ASCII characters, keep basic punctuation
+  return text
+    .replace(/[\u{1F600}-\u{1F64F}]/gu, '') // emoticons
+    .replace(/[\u{1F300}-\u{1F5FF}]/gu, '') // misc symbols
+    .replace(/[\u{1F680}-\u{1F6FF}]/gu, '') // transport
+    .replace(/[\u{1F1E0}-\u{1F1FF}]/gu, '') // flags
+    .replace(/[\u{2600}-\u{26FF}]/gu, '')   // misc symbols
+    .replace(/[\u{2700}-\u{27BF}]/gu, '')   // dingbats
+    .replace(/[\u{FE00}-\u{FE0F}]/gu, '')   // variation selectors
+    .replace(/[\u{1F900}-\u{1F9FF}]/gu, '') // supplemental symbols
+    .replace(/[\u{1FA00}-\u{1FA6F}]/gu, '') // chess symbols
+    .replace(/[\u{1FA70}-\u{1FAFF}]/gu, '') // symbols extended
+    .replace(/[^\x00-\x7F]/g, '')           // remove any remaining non-ASCII
+    .trim();
+}
+
 const searchParamsSchema = z.object({
   query: z.string().optional().describe('Search query for markets'),
   category: z.string().optional().describe('Category filter (politics, sports, crypto, etc.)'),
@@ -113,19 +135,18 @@ export const viewMarketsAction: Action = {
         return { success: true, text: noResultsMsg, data: { markets: [] } };
       }
 
-      // Format market list - keep it simple, no emojis (can cause DB encoding issues)
-      const marketList = markets.slice(0, 5).map((m, i) => {
+      // Format market list - single-line format to prevent DB issues with newlines
+      const marketList = markets.slice(0, 3).map((m, i) => {
         const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
         const noToken = m.tokens.find(t => t.outcome.toLowerCase() === 'no');
         const yesPrice = yesToken?.price ?? 0.5;
         const noPrice = noToken?.price ?? 0.5;
+        const question = sanitizeText(m.question).slice(0, 60);
 
-        return `${i + 1}. ${m.question}
-   Yes: ${(yesPrice * 100).toFixed(1)}% | No: ${(noPrice * 100).toFixed(1)}%
-   Volume: $${Math.round(m.volume_num).toLocaleString()}`;
-      }).join('\n\n');
+        return `${i + 1}. ${question} - Yes: ${(yesPrice * 100).toFixed(0)}%, No: ${(noPrice * 100).toFixed(0)}%`;
+      }).join(' | ');
 
-      const responseText = `Markets${query ? ` matching "${query}"` : ''}:\n\n${marketList}`;
+      const responseText = `Markets${query ? ` for "${sanitizeText(query)}"` : ''}: ${marketList}`;
 
       if (callback) {
         await callback({
@@ -173,22 +194,7 @@ export const viewMarketsAction: Action = {
       {
         name: '{{agentName}}',
         content: {
-          text: 'Markets matching "crypto":\n\n1. Will Bitcoin reach $100k in 2025?\n   Yes: 65.2% | No: 34.8%\n   Volume: $1,234,567',
-          action: 'VIEW_MARKETS',
-        },
-      },
-    ],
-    [
-      {
-        name: '{{userName}}',
-        content: {
-          text: 'What political markets are available?',
-        },
-      },
-      {
-        name: '{{agentName}}',
-        content: {
-          text: 'Markets matching "political":\n\n1. Who will win the 2024 election?\n   Yes: 52.1% | No: 47.9%\n   Volume: $5,678,901',
+          text: 'Markets for "crypto": 1. Will Bitcoin reach $100k in 2025? - Yes: 65%, No: 35% | 2. ETH above $5k? - Yes: 40%, No: 60%',
           action: 'VIEW_MARKETS',
         },
       },

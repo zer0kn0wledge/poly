@@ -15,6 +15,26 @@ import type {
 import { logger } from '@elizaos/core';
 import { PolymarketService } from '../services/polymarket';
 
+/**
+ * Sanitize text to prevent database encoding issues.
+ */
+function sanitizeText(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/[\u{1F600}-\u{1F64F}]/gu, '')
+    .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')
+    .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')
+    .replace(/[\u{1F1E0}-\u{1F1FF}]/gu, '')
+    .replace(/[\u{2600}-\u{26FF}]/gu, '')
+    .replace(/[\u{2700}-\u{27BF}]/gu, '')
+    .replace(/[\u{FE00}-\u{FE0F}]/gu, '')
+    .replace(/[\u{1F900}-\u{1F9FF}]/gu, '')
+    .replace(/[\u{1FA00}-\u{1FA6F}]/gu, '')
+    .replace(/[\u{1FA70}-\u{1FAFF}]/gu, '')
+    .replace(/[^\x00-\x7F]/g, '')
+    .trim();
+}
+
 export const viewPositionAction: Action = {
   name: 'VIEW_POSITIONS',
   similes: [
@@ -91,11 +111,12 @@ You don't have any open positions. Use the search command to find markets to tra
         };
       }
 
-      // Format positions - no emojis (can cause DB encoding issues)
+      // Format positions - sanitize text to prevent DB encoding issues
       const positionsList = positions.map((p, i) => {
         const pnlSign = p.unrealizedPnl >= 0 ? '+' : '';
+        const question = sanitizeText(p.market.question);
 
-        return `${i + 1}. ${p.market.question}
+        return `${i + 1}. ${question}
    Outcome: ${p.outcome}
    Shares: ${p.size.toFixed(2)} @ $${p.avgPrice.toFixed(4)} avg
    Current: $${p.currentPrice.toFixed(4)}
