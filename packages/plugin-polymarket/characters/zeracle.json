@@ -2,7 +2,8 @@
   "name": "Zeracle",
   "plugins": [
     "@elizaos/plugin-sql",
-    "@elizaos/plugin-bootstrap"
+    "@elizaos/plugin-bootstrap",
+    "@elizaos/plugin-anthropic"
   ],
   "settings": {
     "secrets": {}
