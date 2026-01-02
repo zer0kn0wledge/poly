@@ -272,28 +272,17 @@ export class DataSourcesService extends Service {
         return [];
       }
 
+      // CryptoPanic API v1 endpoint - same for all API keys
+      // Only auth_token is required, filter is optional
       const params = new URLSearchParams({
         auth_token: this.cryptoPanicKey,
-        public: 'true',
       });
       if (filter) params.append('filter', filter);
 
-      // CryptoPanic has different endpoints for free vs pro API keys:
-      // - Free tier: https://cryptopanic.com/api/free/v1/posts/
-      // - Pro tier: https://cryptopanic.com/api/v1/posts/
-      // Try free tier first (most common), fall back to pro if configured
-      const isPro = process.env.CRYPTOPANIC_PRO === 'true';
-      const baseUrl = isPro
-        ? 'https://cryptopanic.com/api/v1/posts/'
-        : 'https://cryptopanic.com/api/free/v1/posts/';
+      const apiUrl = `https://cryptopanic.com/api/v1/posts/?${params}`;
+      logger.debug({ url: apiUrl.replace(this.cryptoPanicKey, 'REDACTED') }, '[DataSources] Fetching CryptoPanic news');
 
-      let response = await safeFetch(`${baseUrl}?${params}`);
-
-      // If free endpoint returns 404, try pro endpoint as fallback
-      if (!isPro && response && response.status === 404) {
-        logger.info('[DataSources] CryptoPanic free endpoint 404, trying pro endpoint');
-        response = await safeFetch(`https://cryptopanic.com/api/v1/posts/?${params}`);
-      }
+      const response = await safeFetch(apiUrl);
 
       // Check if response exists and is OK before parsing
       if (!response) {
