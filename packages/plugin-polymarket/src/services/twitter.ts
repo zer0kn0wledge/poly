@@ -229,6 +229,7 @@ export class TwitterService extends Service {
 
   /**
    * Post a trade notification tweet
+   * Professional format without emojis
    */
   async postTradeNotification(trade: {
     market: string;
@@ -238,22 +239,59 @@ export class TwitterService extends Service {
     confidence: number;
     reasoning: string;
   }): Promise<TweetResult | null> {
-    const directionEmoji = trade.direction === 'BUY_YES' ? '🟢' : '🔴';
     const directionText = trade.direction === 'BUY_YES' ? 'YES' : 'NO';
+    const marketPreview = trade.market.slice(0, 70) + (trade.market.length > 70 ? '...' : '');
+    const reasoningPreview = trade.reasoning.slice(0, 80) + (trade.reasoning.length > 80 ? '...' : '');
 
-    // Build tweet text - Twitter limit is 280 chars
-    let tweetText = `${directionEmoji} Bought ${directionText} on @Polymarket
+    // Build professional tweet text - no emojis
+    let tweetText = `New Position: ${directionText} @ ${(trade.price * 100).toFixed(0)}%
 
-"${trade.market.slice(0, 80)}${trade.market.length > 80 ? '...' : ''}"
+"${marketPreview}"
 
-💰 $${trade.amount.toFixed(2)} @ ${(trade.price * 100).toFixed(1)}%
-📊 Confidence: ${trade.confidence}%
+Size: $${trade.amount.toFixed(0)} | Conf: ${trade.confidence}%
 
-${trade.reasoning.slice(0, 100)}${trade.reasoning.length > 100 ? '...' : ''}
+Thesis: ${reasoningPreview}
 
-#Polymarket #PredictionMarkets`;
+#Polymarket`;
 
     // Truncate if too long
+    if (tweetText.length > 280) {
+      tweetText = tweetText.slice(0, 277) + '...';
+    }
+
+    return this.tweet(tweetText);
+  }
+
+  /**
+   * Post a market analysis tweet
+   * Detailed, professional format
+   */
+  async postMarketAnalysis(analysis: {
+    headline: string;
+    markets: Array<{
+      question: string;
+      yesPrice: number;
+      volume: number;
+      insight: string;
+    }>;
+    overallTake: string;
+  }): Promise<TweetResult | null> {
+    const marketLines = analysis.markets.slice(0, 2).map((m, i) => {
+      const question = m.question.slice(0, 50) + (m.question.length > 50 ? '...' : '');
+      const vol = m.volume >= 1000000 ? `$${(m.volume / 1000000).toFixed(1)}M` : `$${(m.volume / 1000).toFixed(0)}K`;
+      return `${i + 1}. ${question} - ${(m.yesPrice * 100).toFixed(0)}% (${vol} vol)`;
+    }).join('\n');
+
+    const take = analysis.overallTake.slice(0, 80) + (analysis.overallTake.length > 80 ? '...' : '');
+
+    let tweetText = `${analysis.headline}
+
+${marketLines}
+
+${take}
+
+#Polymarket #Markets`;
+
     if (tweetText.length > 280) {
       tweetText = tweetText.slice(0, 277) + '...';
     }

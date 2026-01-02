@@ -1,7 +1,8 @@
 /**
  * View Markets Action
  *
- * Allows users to search and browse prediction markets.
+ * Allows users to search and browse prediction markets with detailed analysis.
+ * Supports category-based filtering and provides comprehensive market data.
  */
 
 import type {
@@ -12,9 +13,9 @@ import type {
   Memory,
   State,
 } from '@elizaos/core';
-import { ModelType, generateObject, logger } from '@elizaos/core';
-import { z } from 'zod';
+import { logger } from '@elizaos/core';
 import { PolymarketService } from '../services/polymarket';
+import type { PolymarketMarket } from '../types';
 
 /**
  * Sanitize text to prevent database encoding issues.
@@ -38,13 +39,74 @@ function sanitizeText(text: string): string {
     .trim();
 }
 
-const searchParamsSchema = z.object({
-  query: z.string().optional().describe('Search query for markets'),
-  category: z.string().optional().describe('Category filter (politics, sports, crypto, etc.)'),
-  limit: z.number().min(1).max(20).default(5).describe('Number of results'),
-});
+/**
+ * Category keywords for detection
+ */
+const CATEGORY_KEYWORDS: Record<string, string[]> = {
+  crypto: ['crypto', 'bitcoin', 'btc', 'ethereum', 'eth', 'defi', 'blockchain', 'token', 'coin', 'web3'],
+  sports: ['sports', 'nfl', 'nba', 'mlb', 'nhl', 'soccer', 'football', 'basketball', 'baseball', 'super bowl', 'championship', 'game', 'match', 'finals', 'world cup'],
+  politics: ['politics', 'election', 'president', 'trump', 'biden', 'congress', 'senate', 'vote', 'political', 'democrat', 'republican', 'governor'],
+  finance: ['finance', 'fed', 'interest rate', 'inflation', 'stock', 'economy', 'gdp', 'recession', 'market crash'],
+  tech: ['tech', 'technology', 'ai', 'apple', 'google', 'microsoft', 'meta', 'openai', 'tesla', 'elon'],
+  entertainment: ['entertainment', 'oscar', 'grammy', 'movie', 'tv', 'celebrity', 'music', 'award', 'emmy'],
+  world: ['world', 'ukraine', 'russia', 'china', 'war', 'international', 'treaty', 'conflict', 'geopolitical'],
+};
 
-type SearchParams = z.infer<typeof searchParamsSchema>;
+/**
+ * Detect category from user text
+ */
+function detectCategory(text: string): string | null {
+  const lowerText = text.toLowerCase();
+  for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
+    for (const keyword of keywords) {
+      if (lowerText.includes(keyword)) {
+        return category;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Format volume for display
+ */
+function formatVolume(volume: number): string {
+  if (volume >= 1000000) return `$${(volume / 1000000).toFixed(1)}M`;
+  if (volume >= 1000) return `$${(volume / 1000).toFixed(0)}K`;
+  return `$${volume.toFixed(0)}`;
+}
+
+/**
+ * Format time remaining until market end date
+ */
+function formatTimeRemaining(endDateIso: string): string {
+  if (!endDateIso) return 'ongoing';
+  const endDate = new Date(endDateIso);
+  const now = new Date();
+  const hoursRemaining = (endDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+
+  if (hoursRemaining < 0) return 'awaiting resolution';
+  if (hoursRemaining < 1) return '<1 hour';
+  if (hoursRemaining < 24) return `${Math.round(hoursRemaining)}h`;
+  if (hoursRemaining < 168) return `${Math.round(hoursRemaining / 24)}d`;
+  return `${Math.round(hoursRemaining / 168)}w`;
+}
+
+/**
+ * Format a single market with detailed data
+ */
+function formatMarketDetailed(m: PolymarketMarket, index: number): string {
+  const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
+  const noToken = m.tokens.find(t => t.outcome.toLowerCase() === 'no');
+  const yesPrice = yesToken?.price ?? 0.5;
+  const noPrice = noToken?.price ?? 0.5;
+  const question = sanitizeText(m.question).slice(0, 80);
+  const volume = formatVolume(m.volume_num || 0);
+  const liquidity = formatVolume(m.liquidity || 0);
+  const timeLeft = formatTimeRemaining(m.end_date_iso);
+
+  return `${index}. ${question} | YES: ${(yesPrice * 100).toFixed(0)}% / NO: ${(noPrice * 100).toFixed(0)}% | Vol: ${volume} | Liq: ${liquidity} | Ends: ${timeLeft}`;
+}
 
 export const viewMarketsAction: Action = {
   name: 'VIEW_MARKETS',
@@ -92,57 +154,84 @@ export const viewMarketsAction: Action = {
         return { success: false, error: errorMsg };
       }
 
-      // Extract search parameters
+      // Extract search parameters from user text
       const text = message.content.text || '';
 
-      // Simple extraction - look for quoted strings or key phrases
-      let query = '';
+      // Detect category from user text
+      const detectedCategory = detectCategory(text);
+
+      // Extract specific query if quoted or after keywords
+      let specificQuery = '';
       const quotedMatch = text.match(/"([^"]+)"/);
       if (quotedMatch) {
-        query = quotedMatch[1];
+        specificQuery = quotedMatch[1];
       } else {
         // Extract keywords after "about", "for", "on", etc.
         const aboutMatch = text.match(/(?:about|for|on|regarding)\s+(.+?)(?:\?|$)/i);
         if (aboutMatch) {
-          query = aboutMatch[1].trim();
+          specificQuery = aboutMatch[1].trim();
         }
       }
 
       // Determine limit
       const limitMatch = text.match(/(\d+)\s*(?:markets?|results?)/i);
-      const limit = limitMatch ? Math.min(parseInt(limitMatch[1]), 20) : 5;
+      const limit = limitMatch ? Math.min(parseInt(limitMatch[1]), 10) : 5;
 
-      logger.info({ query, limit }, '[ViewMarketsAction] Fetching markets');
+      logger.info({ detectedCategory, specificQuery, limit }, '[ViewMarketsAction] Fetching markets');
 
-      // Fetch markets
-      const markets = query
-        ? await service.searchMarkets(query, limit)
-        : await service.getMarkets({ active: true, limit });
+      // Fetch markets based on detected category or query
+      let markets: PolymarketMarket[] = [];
+      let searchContext = '';
+
+      if (detectedCategory) {
+        // Use category-based search for better filtering
+        markets = await service.getMarketsByCategory(detectedCategory, limit * 2);
+        searchContext = `${detectedCategory.toUpperCase()} markets`;
+        logger.info({ category: detectedCategory, count: markets.length }, '[ViewMarketsAction] Category search');
+      } else if (specificQuery) {
+        // Use specific query search
+        markets = await service.searchMarkets(specificQuery, limit * 2);
+        searchContext = `markets for "${sanitizeText(specificQuery)}"`;
+      } else {
+        // Get trending/high-volume markets
+        markets = await service.getTrendingMarkets({ limit: limit * 2, minVolume: 5000 });
+        searchContext = 'trending markets';
+      }
+
+      // Sort by volume and take top results
+      markets = markets
+        .sort((a, b) => (b.volume_num || 0) - (a.volume_num || 0))
+        .slice(0, limit);
 
       if (markets.length === 0) {
-        const noResultsMsg = query
-          ? `No markets found for "${query}". Try a different search term.`
-          : 'No active markets found.';
+        const noResultsMsg = detectedCategory
+          ? `No active ${detectedCategory} markets found right now. Try a different category.`
+          : specificQuery
+            ? `No markets found for "${sanitizeText(specificQuery)}". Try different search terms.`
+            : 'No active markets found at the moment.';
         if (callback) {
           await callback({ text: noResultsMsg });
         }
         return { success: true, text: noResultsMsg, data: { markets: [] } };
       }
 
-      // Format market list - single-line format to prevent DB issues with newlines
-      const marketList = markets.slice(0, 5).map((m, i) => {
-        const yesToken = m.tokens.find(t => t.outcome.toLowerCase() === 'yes');
-        const noToken = m.tokens.find(t => t.outcome.toLowerCase() === 'no');
-        const yesPrice = yesToken?.price ?? 0.5;
-        const noPrice = noToken?.price ?? 0.5;
-        const question = sanitizeText(m.question).slice(0, 60);
+      // Format markets with detailed data
+      const formattedMarkets = markets.map((m, i) => formatMarketDetailed(m, i + 1));
 
-        return `${i + 1}. ${question} - Yes: ${(yesPrice * 100).toFixed(0)}%, No: ${(noPrice * 100).toFixed(0)}%`;
-      }).join(' | ');
+      // Calculate aggregate stats
+      const totalVolume = markets.reduce((sum, m) => sum + (m.volume_num || 0), 0);
+      const avgLiquidity = markets.reduce((sum, m) => sum + (m.liquidity || 0), 0) / markets.length;
 
-      const responseText = `Markets${query ? ` for "${sanitizeText(query)}"` : ''}: ${marketList}`;
+      // Build comprehensive response
+      const header = `Top ${searchContext} (${markets.length} results, total vol: ${formatVolume(totalVolume)}):`;
+      const responseText = `${header} ${formattedMarkets.join(' | ')}`;
 
-      logger.info({ marketCount: markets.length, responsePreview: responseText.slice(0, 100) }, '[ViewMarketsAction] Sending response');
+      logger.info({
+        category: detectedCategory,
+        query: specificQuery,
+        marketCount: markets.length,
+        totalVolume,
+      }, '[ViewMarketsAction] Sending response');
 
       if (callback) {
         await callback({
@@ -155,13 +244,23 @@ export const viewMarketsAction: Action = {
         success: true,
         text: responseText,
         data: {
+          category: detectedCategory,
+          query: specificQuery,
           markets: markets.map(m => ({
             conditionId: m.condition_id,
             question: m.question,
             tokens: m.tokens,
             volume: m.volume_num,
+            liquidity: m.liquidity,
+            spread: m.spread,
+            endDate: m.end_date_iso,
             active: m.active,
           })),
+          stats: {
+            totalVolume,
+            avgLiquidity,
+            marketCount: markets.length,
+          },
         },
       };
     } catch (error) {
@@ -190,7 +289,22 @@ export const viewMarketsAction: Action = {
       {
         name: '{{agentName}}',
         content: {
-          text: 'Markets for "crypto": 1. Will Bitcoin reach $100k in 2025? - Yes: 65%, No: 35% | 2. ETH above $5k? - Yes: 40%, No: 60%',
+          text: 'Top CRYPTO markets (5 results, total vol: $12.5M): 1. Will Bitcoin reach $100k in 2025? | YES: 65% / NO: 35% | Vol: $5.2M | Liq: $850K | Ends: 12d | 2. ETH above $5k by year end? | YES: 42% / NO: 58% | Vol: $3.1M | Liq: $420K | Ends: 25d',
+          action: 'VIEW_MARKETS',
+        },
+      },
+    ],
+    [
+      {
+        name: '{{userName}}',
+        content: {
+          text: 'What sports markets are hot right now?',
+        },
+      },
+      {
+        name: '{{agentName}}',
+        content: {
+          text: 'Top SPORTS markets (5 results, total vol: $8.7M): 1. Super Bowl 2025 winner? | YES: 28% / NO: 72% | Vol: $4.5M | Liq: $1.2M | Ends: 35d | 2. NBA Finals champion? | YES: 45% / NO: 55% | Vol: $2.1M | Liq: $380K | Ends: 180d',
           action: 'VIEW_MARKETS',
         },
       },
