@@ -575,16 +575,35 @@ export class PolymarketService extends Service {
   }
 
   /**
+   * Safely parse JSON string or return the value if already parsed
+   */
+  private safeJsonParse(value: any, fallback: any = []): any {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return fallback;
+      }
+    }
+    return fallback;
+  }
+
+  /**
    * Parse tokens from various API response formats
+   * Note: Gamma API returns clobTokenIds, outcomes, outcomePrices as JSON STRINGS
    */
   private parseTokens(m: any): { token_id: string; outcome: string; price: number; winner?: boolean }[] {
     const conditionId = m.conditionId || m.condition_id || '';
-    const outcomeNames = m.outcomes || ['Yes', 'No'];
-    const outcomePrices = m.outcomePrices || [];
+
+    // Gamma API returns these as JSON strings, need to parse them
+    const clobTokenIds = this.safeJsonParse(m.clobTokenIds, []);
+    const outcomeNames = this.safeJsonParse(m.outcomes, ['Yes', 'No']);
+    const outcomePrices = this.safeJsonParse(m.outcomePrices, []);
 
     // Priority 1: clobTokenIds (Gamma API format) - these are the actual tradeable token IDs
-    if (Array.isArray(m.clobTokenIds) && m.clobTokenIds.length > 0 && m.clobTokenIds[0]) {
-      return m.clobTokenIds.map((tokenId: string, idx: number) => ({
+    if (clobTokenIds.length > 0 && clobTokenIds[0]) {
+      return clobTokenIds.map((tokenId: string, idx: number) => ({
         token_id: tokenId,
         outcome: outcomeNames[idx] || (idx === 0 ? 'Yes' : 'No'),
         price: parseFloat(outcomePrices[idx] || '0.5'),
@@ -593,8 +612,9 @@ export class PolymarketService extends Service {
     }
 
     // Priority 2: tokens array with proper structure
-    if (Array.isArray(m.tokens) && m.tokens.length > 0) {
-      return m.tokens.map((t: any, idx: number) => ({
+    const tokens = this.safeJsonParse(m.tokens, []);
+    if (tokens.length > 0) {
+      return tokens.map((t: any, idx: number) => ({
         token_id: t.token_id || t.tokenId || t.clobTokenId || `${conditionId}-${idx}`,
         outcome: t.outcome || outcomeNames[idx] || (idx === 0 ? 'Yes' : 'No'),
         price: parseFloat(t.price || outcomePrices[idx] || '0.5'),
@@ -603,7 +623,7 @@ export class PolymarketService extends Service {
     }
 
     // Fallback: generate synthetic tokens (these won't be tradeable)
-    logger.warn({ conditionId, hasTokens: !!m.tokens, hasClobTokenIds: !!m.clobTokenIds },
+    logger.warn({ conditionId, hasClobTokenIds: typeof m.clobTokenIds },
       '[PolymarketService] No valid token IDs found, generating synthetic (non-tradeable)');
     return [
       { token_id: `${conditionId}-0`, outcome: outcomeNames[0] || 'Yes', price: parseFloat(outcomePrices[0] || '0.5') },
