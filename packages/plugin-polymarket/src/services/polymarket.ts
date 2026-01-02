@@ -11,6 +11,52 @@ import { Wallet, providers } from 'ethers';
 import { getCurrentETTime, isMarketExpired, detectPastYearMarket } from '../providers/timezone';
 
 const { JsonRpcProvider } = providers;
+
+// ============= Fetch with Timeout =============
+
+const DEFAULT_TIMEOUT_MS = 15000; // 15 seconds for API calls
+
+/**
+ * Fetch with timeout to prevent hanging requests
+ */
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Safe fetch that returns null on error instead of throwing
+ */
+async function safeFetch(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<Response | null> {
+  try {
+    return await fetchWithTimeout(url, options, timeoutMs);
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      logger.warn({ url }, '[PolymarketService] Request timed out');
+    } else {
+      logger.debug({ error, url }, '[PolymarketService] Fetch failed');
+    }
+    return null;
+  }
+}
 import type {
   ApiCredentials,
   MarketSearchParams,
@@ -231,7 +277,11 @@ export class PolymarketService extends Service {
       if (params.limit) queryParams.set('limit', String(params.limit));
       if (params.offset) queryParams.set('offset', String(params.offset));
 
-      const response = await fetch(`${GAMMA_API_HOST}/markets?${queryParams.toString()}`);
+      const response = await safeFetch(`${GAMMA_API_HOST}/markets?${queryParams.toString()}`);
+      if (!response) {
+        logger.warn('[PolymarketService] Failed to fetch markets - request failed');
+        return [];
+      }
       if (!response.ok) {
         throw new Error(`Failed to fetch markets: ${response.statusText}`);
       }
@@ -300,7 +350,11 @@ export class PolymarketService extends Service {
    */
   async getMarket(conditionId: string): Promise<PolymarketMarket | null> {
     try {
-      const response = await fetch(`${GAMMA_API_HOST}/markets/${conditionId}`);
+      const response = await safeFetch(`${GAMMA_API_HOST}/markets/${conditionId}`);
+      if (!response) {
+        logger.warn({ conditionId }, '[PolymarketService] Failed to fetch market - request failed');
+        return null;
+      }
       if (!response.ok) {
         if (response.status === 404) return null;
         throw new Error(`Failed to fetch market: ${response.statusText}`);
@@ -311,7 +365,7 @@ export class PolymarketService extends Service {
       return markets[0] ?? null;
     } catch (error) {
       logger.error({ error, conditionId }, '[PolymarketService] Failed to fetch market');
-      throw error;
+      return null; // Return null instead of throwing for graceful degradation
     }
   }
 

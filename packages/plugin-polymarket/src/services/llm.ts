@@ -7,6 +7,32 @@
 
 import { Service, logger, type IAgentRuntime } from '@elizaos/core';
 
+// ============= Fetch with Timeout =============
+
+const DEFAULT_TIMEOUT_MS = 30000; // 30 seconds for LLM calls (they can be slow)
+
+/**
+ * Fetch with timeout to prevent hanging requests
+ */
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export interface LLMMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -76,7 +102,7 @@ export class LLMService extends Service {
       throw new Error('LLM not available - ANTHROPIC_API_KEY not set');
     }
 
-    const response = await fetch(ANTHROPIC_API_URL, {
+    const response = await fetchWithTimeout(ANTHROPIC_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -91,7 +117,7 @@ export class LLMService extends Service {
           { role: 'user', content: prompt }
         ],
       }),
-    });
+    }, 60000); // 60s timeout for LLM requests
 
     if (!response.ok) {
       const error = await response.text();

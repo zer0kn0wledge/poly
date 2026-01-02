@@ -12,6 +12,52 @@
 
 import { Service, logger, type IAgentRuntime } from '@elizaos/core';
 
+// ============= Fetch with Timeout =============
+
+const DEFAULT_TIMEOUT_MS = 10000; // 10 seconds
+
+/**
+ * Fetch with timeout to prevent hanging requests
+ */
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Safe fetch that returns null on error instead of throwing
+ */
+async function safeFetch(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<Response | null> {
+  try {
+    return await fetchWithTimeout(url, options, timeoutMs);
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      logger.warn({ url }, '[DataSources] Request timed out');
+    } else {
+      logger.debug({ error, url }, '[DataSources] Fetch failed');
+    }
+    return null;
+  }
+}
+
 // ============= Types =============
 
 export interface NewsItem {
@@ -232,9 +278,12 @@ export class DataSourcesService extends Service {
       });
       if (filter) params.append('filter', filter);
 
-      const response = await fetch(`https://cryptopanic.com/api/v1/posts/?${params}`);
+      const response = await safeFetch(`https://cryptopanic.com/api/v1/posts/?${params}`);
 
-      // Check if response is OK before parsing
+      // Check if response exists and is OK before parsing
+      if (!response) {
+        return [];
+      }
       if (!response.ok) {
         logger.warn({ status: response.status }, '[DataSources] CryptoPanic API error');
         return [];
@@ -324,7 +373,11 @@ export class DataSourcesService extends Service {
 
       const headers = this.getCoinGeckoHeaders();
 
-      const response = await fetch(url, { headers });
+      const response = await safeFetch(url, { headers });
+      if (!response) {
+        return [];
+      }
+
       const data = await response.json();
 
       // Handle error responses from CoinGecko API
@@ -359,9 +412,12 @@ export class DataSourcesService extends Service {
       const baseUrl = this.getCoinGeckoBaseUrl();
       const headers = this.getCoinGeckoHeaders();
 
-      const response = await fetch(`${baseUrl}/search/trending`, { headers });
-      const data = await response.json();
+      const response = await safeFetch(`${baseUrl}/search/trending`, { headers });
+      if (!response) {
+        return [];
+      }
 
+      const data = await response.json();
       return (data.coins || []).map((c: any) => c.item?.name || c.name).slice(0, 10);
     } catch (error) {
       logger.error({ error }, '[DataSources] CoinGecko trending failed');
@@ -373,9 +429,12 @@ export class DataSourcesService extends Service {
 
   async getDeFiTVL(): Promise<{ protocol: string; tvl: number; change24h: number }[]> {
     try {
-      const response = await fetch('https://api.llama.fi/protocols');
-      const data = await response.json();
+      const response = await safeFetch('https://api.llama.fi/protocols');
+      if (!response) {
+        return [];
+      }
 
+      const data = await response.json();
       return (data || [])
         .slice(0, 20)
         .map((protocol: any) => ({
@@ -391,9 +450,12 @@ export class DataSourcesService extends Service {
 
   async getStablecoinFlows(): Promise<{ name: string; mcap: number; change7d: number }[]> {
     try {
-      const response = await fetch('https://stablecoins.llama.fi/stablecoins?includePrices=true');
-      const data = await response.json();
+      const response = await safeFetch('https://stablecoins.llama.fi/stablecoins?includePrices=true');
+      if (!response) {
+        return [];
+      }
 
+      const data = await response.json();
       return (data.peggedAssets || [])
         .slice(0, 10)
         .map((stable: any) => ({
@@ -425,9 +487,12 @@ export class DataSourcesService extends Service {
           ? 'https://api.sportmonks.com/v3/football/fixtures'
           : `https://api.sportmonks.com/v3/${sport}/fixtures`;
 
-      const response = await fetch(`${endpoint}?api_token=${this.sportMonksKey}&include=odds`);
-      const data = await response.json();
+      const response = await safeFetch(`${endpoint}?api_token=${this.sportMonksKey}&include=odds`);
+      if (!response) {
+        return [];
+      }
 
+      const data = await response.json();
       return (data.data || []).slice(0, 20).map((event: any) => ({
         id: event.id?.toString(),
         sport,
@@ -489,9 +554,12 @@ export class DataSourcesService extends Service {
     for (const source of sampleSources) {
       try {
         const rssUrl = `https://news.google.com/rss/search?q=site:${source}&hl=en-US&gl=US&ceid=US:en`;
-        const response = await fetch(rssUrl);
-        const text = await response.text();
+        const response = await safeFetch(rssUrl, {}, 8000); // 8s timeout for RSS
+        if (!response) {
+          continue;
+        }
 
+        const text = await response.text();
         // Simple RSS parsing
         const items = this.parseRSS(text, source, category);
         allNews.push(...items);

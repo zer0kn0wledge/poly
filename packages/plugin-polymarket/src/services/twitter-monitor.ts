@@ -7,6 +7,52 @@
 
 import { Service, logger, type IAgentRuntime } from '@elizaos/core';
 
+// ============= Fetch with Timeout =============
+
+const DEFAULT_TIMEOUT_MS = 10000; // 10 seconds
+
+/**
+ * Fetch with timeout to prevent hanging requests
+ */
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Safe fetch that returns null on error instead of throwing
+ */
+async function safeFetch(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<Response | null> {
+  try {
+    return await fetchWithTimeout(url, options, timeoutMs);
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      logger.warn({ url: url.split('?')[0] }, '[TwitterMonitor] Request timed out');
+    } else {
+      logger.debug({ error, url: url.split('?')[0] }, '[TwitterMonitor] Fetch failed');
+    }
+    return null;
+  }
+}
+
 export interface Tweet {
   id: string;
   text: string;
@@ -175,7 +221,7 @@ export class TwitterMonitorService extends Service {
   private async generateBearerToken(): Promise<void> {
     try {
       const credentials = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64');
-      const response = await fetch('https://api.twitter.com/oauth2/token', {
+      const response = await safeFetch('https://api.twitter.com/oauth2/token', {
         method: 'POST',
         headers: {
           'Authorization': `Basic ${credentials}`,
@@ -183,6 +229,11 @@ export class TwitterMonitorService extends Service {
         },
         body: 'grant_type=client_credentials',
       });
+
+      if (!response) {
+        logger.warn('[TwitterMonitor] Bearer token request failed');
+        return;
+      }
 
       const data = await response.json();
       if (data.access_token) {
@@ -236,7 +287,7 @@ export class TwitterMonitorService extends Service {
         expansions: 'author_id',
       });
 
-      const response = await fetch(
+      const response = await safeFetch(
         `https://api.twitter.com/2/tweets/search/recent?${params}`,
         {
           headers: {
@@ -244,6 +295,10 @@ export class TwitterMonitorService extends Service {
           },
         }
       );
+
+      if (!response) {
+        return [];
+      }
 
       if (!response.ok) {
         const error = await response.text();
@@ -280,12 +335,16 @@ export class TwitterMonitorService extends Service {
 
     try {
       // First get user ID
-      const userResponse = await fetch(
+      const userResponse = await safeFetch(
         `https://api.twitter.com/2/users/by/username/${username}?user.fields=public_metrics`,
         {
           headers: { Authorization: `Bearer ${this.bearerToken}` },
         }
       );
+
+      if (!userResponse) {
+        return [];
+      }
 
       const userData = await userResponse.json();
       if (!userData.data?.id) {
@@ -302,12 +361,16 @@ export class TwitterMonitorService extends Service {
         exclude: 'retweets,replies',
       });
 
-      const tweetsResponse = await fetch(
+      const tweetsResponse = await safeFetch(
         `https://api.twitter.com/2/users/${userId}/tweets?${params}`,
         {
           headers: { Authorization: `Bearer ${this.bearerToken}` },
         }
       );
+
+      if (!tweetsResponse) {
+        return [];
+      }
 
       const tweetsData = await tweetsResponse.json();
 

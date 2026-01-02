@@ -8,6 +8,52 @@
 import { Service, logger, type IAgentRuntime } from '@elizaos/core';
 import * as crypto from 'crypto';
 
+// ============= Fetch with Timeout =============
+
+const DEFAULT_TIMEOUT_MS = 15000; // 15 seconds
+
+/**
+ * Fetch with timeout to prevent hanging requests
+ */
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Safe fetch that returns null on error instead of throwing
+ */
+async function safeFetch(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<Response | null> {
+  try {
+    return await fetchWithTimeout(url, options, timeoutMs);
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      logger.warn({ url }, '[Twitter] Request timed out');
+    } else {
+      logger.debug({ error, url }, '[Twitter] Fetch failed');
+    }
+    return null;
+  }
+}
+
 export interface TweetResult {
   id: string;
   text: string;
@@ -146,7 +192,7 @@ export class TwitterService extends Service {
     try {
       const authHeader = this.generateOAuthHeader('POST', url);
 
-      const response = await fetch(url, {
+      const response = await safeFetch(url, {
         method: 'POST',
         headers: {
           Authorization: authHeader,
@@ -154,6 +200,11 @@ export class TwitterService extends Service {
         },
         body: JSON.stringify({ text }),
       });
+
+      if (!response) {
+        logger.error('[Twitter] Tweet request failed (timeout or network error)');
+        return null;
+      }
 
       if (!response.ok) {
         const error = await response.text();
