@@ -8,7 +8,7 @@
 import { Service, logger, type IAgentRuntime } from '@elizaos/core';
 import { ClobClient } from '@polymarket/clob-client';
 import { Wallet, providers } from 'ethers';
-import { getCurrentETTime, isMarketExpired, detectPastYearMarket } from '../providers/timezone';
+import { getCurrentETTime } from '../providers/timezone';
 
 const { JsonRpcProvider } = providers;
 
@@ -297,7 +297,8 @@ export class PolymarketService extends Service {
       const currentYear = etTime.year;
 
       // Filter out markets that aren't tradeable
-      // Be less aggressive - trust API flags and only filter obvious cases
+      // TRUST the API's closed flag - if closed=false, it's tradeable
+      // Don't filter by end_date or year in question - market can be open after end date (awaiting resolution)
       const beforeFilter = markets.length;
 
       // Log raw market data for first few markets to debug
@@ -313,38 +314,28 @@ export class PolymarketService extends Service {
       }, '[PolymarketService] Sample raw market data before filtering');
 
       markets = markets.filter(m => {
-        // Must be active and not closed (trust API flags)
-        if (m.closed || m.archived) {
-          logger.info({ question: m.question.slice(0, 50), closed: m.closed, archived: m.archived },
-            '[PolymarketService] FILTERED: closed/archived');
+        // Trust API's closed flag - this is the authoritative source
+        if (m.closed) {
+          logger.debug({ question: m.question.slice(0, 50) },
+            '[PolymarketService] FILTERED: closed');
           return false;
         }
 
-        // Filter out clearly expired markets (end date in the past)
-        if (m.end_date_iso && isMarketExpired(m.end_date_iso)) {
-          logger.info({ question: m.question.slice(0, 50), endDate: m.end_date_iso },
-            '[PolymarketService] FILTERED: expired end_date');
+        // Filter archived markets
+        if (m.archived) {
+          logger.debug({ question: m.question.slice(0, 50) },
+            '[PolymarketService] FILTERED: archived');
           return false;
         }
 
-        // Only filter markets that EXCLUSIVELY mention past years
-        const pastYearCheck = detectPastYearMarket(m.question, currentYear);
-        if (pastYearCheck.isPast) {
-          logger.info({ question: m.question.slice(0, 50), mentionedYear: pastYearCheck.mentionedYear },
-            '[PolymarketService] FILTERED: only past years');
-          return false;
-        }
-
-        // Basic token validation - just check tokens exist
-        // Don't be too strict on format since API might change
+        // Basic token validation - just check tokens exist for trading
         const hasTokens = m.tokens && m.tokens.length > 0 && m.tokens.some(t => t.token_id);
         if (!hasTokens) {
-          logger.info({ question: m.question.slice(0, 50), tokens: m.tokens },
+          logger.debug({ question: m.question.slice(0, 50) },
             '[PolymarketService] FILTERED: no valid tokens');
           return false;
         }
 
-        logger.info({ question: m.question.slice(0, 50) }, '[PolymarketService] PASSED filter');
         return true;
       });
 
