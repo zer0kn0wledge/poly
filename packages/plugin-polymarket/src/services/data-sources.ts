@@ -220,10 +220,15 @@ export class DataSourcesService extends Service {
     }
 
     try {
+      // Skip if no API key
+      if (!this.cryptoPanicKey) {
+        logger.debug('[DataSources] CryptoPanic API key not configured');
+        return [];
+      }
+
       const params = new URLSearchParams({
         auth_token: this.cryptoPanicKey,
         public: 'true',
-        kind: 'news',
       });
       if (filter) params.append('filter', filter);
 

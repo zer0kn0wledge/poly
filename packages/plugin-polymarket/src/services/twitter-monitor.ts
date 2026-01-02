@@ -137,8 +137,11 @@ export class TwitterMonitorService extends Service {
 
   private alertBuffer: TwitterAlert[] = [];
   private lastSearchTime: Map<string, number> = new Map();
+  private lastGlobalRequest: number = 0;
   private readonly MAX_ALERTS = 500;
-  private readonly SEARCH_COOLDOWN = 15000; // 15 seconds between searches
+  private readonly SEARCH_COOLDOWN = 60000; // 60 seconds between same searches
+  private readonly GLOBAL_REQUEST_DELAY = 5000; // 5 seconds between ANY request
+  private readonly MAX_REQUESTS_PER_CYCLE = 5; // Max requests per scan cycle
 
   constructor() {
     super();
@@ -199,18 +202,30 @@ export class TwitterMonitorService extends Service {
 
   // ============= Search Methods =============
 
+  private async enforceRateLimit(): Promise<boolean> {
+    const timeSinceLastRequest = Date.now() - this.lastGlobalRequest;
+    if (timeSinceLastRequest < this.GLOBAL_REQUEST_DELAY) {
+      const waitTime = this.GLOBAL_REQUEST_DELAY - timeSinceLastRequest;
+      await new Promise(r => setTimeout(r, waitTime));
+    }
+    this.lastGlobalRequest = Date.now();
+    return true;
+  }
+
   async searchTweets(query: string, maxResults: number = 10): Promise<Tweet[]> {
     if (!this.bearerToken) {
       logger.warn('[TwitterMonitor] No bearer token available');
       return [];
     }
 
-    // Rate limit check
+    // Per-query cooldown
     const lastSearch = this.lastSearchTime.get(query) || 0;
     if (Date.now() - lastSearch < this.SEARCH_COOLDOWN) {
-      logger.debug('[TwitterMonitor] Search cooldown active for query:', query);
-      return [];
+      return []; // Silent return, already logged at debug level
     }
+
+    // Global rate limit
+    await this.enforceRateLimit();
 
     try {
       const params = new URLSearchParams({
@@ -259,6 +274,9 @@ export class TwitterMonitorService extends Service {
     if (!this.bearerToken) {
       return [];
     }
+
+    // Global rate limit
+    await this.enforceRateLimit();
 
     try {
       // First get user ID
@@ -339,15 +357,22 @@ export class TwitterMonitorService extends Service {
 
   async scanForAlerts(categories: string[] = ['crypto', 'politics', 'sports']): Promise<TwitterAlert[]> {
     const alerts: TwitterAlert[] = [];
+    let requestCount = 0;
 
     for (const category of categories) {
+      // Stop if we've hit the request limit
+      if (requestCount >= this.MAX_REQUESTS_PER_CYCLE) break;
+
       const keywords = MONITOR_KEYWORDS[category as keyof typeof MONITOR_KEYWORDS] || [];
       const accounts = WATCH_ACCOUNTS[category as keyof typeof WATCH_ACCOUNTS] || [];
 
-      // Search by keywords (sample a few)
-      const keywordSample = keywords.slice(0, 3);
+      // Search by keywords (just 1 per category to reduce requests)
+      const keywordSample = keywords.slice(0, 1);
       for (const keyword of keywordSample) {
+        if (requestCount >= this.MAX_REQUESTS_PER_CYCLE) break;
+
         const tweets = await this.searchTweets(keyword, 5);
+        requestCount++;
 
         for (const tweet of tweets) {
           const alert = this.evaluateTweet(tweet, category, [keyword]);
@@ -355,15 +380,15 @@ export class TwitterMonitorService extends Service {
             alerts.push(alert);
           }
         }
-
-        // Small delay to avoid rate limits
-        await new Promise((r) => setTimeout(r, 1000));
       }
 
-      // Check watched accounts (sample a few)
-      const accountSample = accounts.slice(0, 3);
+      // Check watched accounts (just 1 per category)
+      const accountSample = accounts.slice(0, 1);
       for (const account of accountSample) {
+        if (requestCount >= this.MAX_REQUESTS_PER_CYCLE) break;
+
         const tweets = await this.getUserTweets(account, 3);
+        requestCount++;
 
         for (const tweet of tweets) {
           // Recent tweets only (last 30 min)
