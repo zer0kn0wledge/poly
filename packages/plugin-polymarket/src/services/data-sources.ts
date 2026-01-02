@@ -228,7 +228,28 @@ export class DataSourcesService extends Service {
       if (filter) params.append('filter', filter);
 
       const response = await fetch(`https://cryptopanic.com/api/v1/posts/?${params}`);
-      const data = await response.json();
+
+      // Check if response is OK before parsing
+      if (!response.ok) {
+        logger.warn({ status: response.status }, '[DataSources] CryptoPanic API error');
+        return [];
+      }
+
+      // Try to parse JSON, handle non-JSON responses
+      let data;
+      try {
+        const text = await response.text();
+        data = JSON.parse(text);
+      } catch (parseError) {
+        logger.warn('[DataSources] CryptoPanic returned non-JSON response');
+        return [];
+      }
+
+      // Check for API errors in response
+      if (data.error || data.info) {
+        logger.warn({ error: data.error, info: data.info }, '[DataSources] CryptoPanic API returned error');
+        return [];
+      }
 
       const news: NewsItem[] = (data.results || []).map((item: any) => ({
         id: item.id?.toString() || crypto.randomUUID(),
@@ -269,15 +290,34 @@ export class DataSourcesService extends Service {
 
   // ============= CoinGecko Integration =============
 
+  private getCoinGeckoBaseUrl(): string {
+    // Pro keys start with 'CG-' and require pro-api endpoint
+    if (this.coinGeckoKey && this.coinGeckoKey.startsWith('CG-')) {
+      return 'https://pro-api.coingecko.com/api/v3';
+    }
+    return 'https://api.coingecko.com/api/v3';
+  }
+
+  private getCoinGeckoHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    if (this.coinGeckoKey) {
+      // Pro keys use x-cg-pro-api-key, demo keys use x-cg-demo-api-key
+      if (this.coinGeckoKey.startsWith('CG-')) {
+        headers['x-cg-pro-api-key'] = this.coinGeckoKey;
+      } else {
+        headers['x-cg-demo-api-key'] = this.coinGeckoKey;
+      }
+    }
+    return headers;
+  }
+
   async getCryptoPrices(coins: string[] = ['bitcoin', 'ethereum']): Promise<CryptoPrice[]> {
     try {
       const ids = coins.join(',');
-      const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${ids}&order=market_cap_desc&sparkline=false&price_change_percentage=24h,7d`;
+      const baseUrl = this.getCoinGeckoBaseUrl();
+      const url = `${baseUrl}/coins/markets?vs_currency=usd&ids=${ids}&order=market_cap_desc&sparkline=false&price_change_percentage=24h,7d`;
 
-      const headers: Record<string, string> = {};
-      if (this.coinGeckoKey) {
-        headers['x-cg-demo-api-key'] = this.coinGeckoKey;
-      }
+      const headers = this.getCoinGeckoHeaders();
 
       const response = await fetch(url, { headers });
       const data = await response.json();
@@ -311,12 +351,10 @@ export class DataSourcesService extends Service {
 
   async getTrendingCoins(): Promise<string[]> {
     try {
-      const headers: Record<string, string> = {};
-      if (this.coinGeckoKey) {
-        headers['x-cg-demo-api-key'] = this.coinGeckoKey;
-      }
+      const baseUrl = this.getCoinGeckoBaseUrl();
+      const headers = this.getCoinGeckoHeaders();
 
-      const response = await fetch('https://api.coingecko.com/api/v3/search/trending', { headers });
+      const response = await fetch(`${baseUrl}/search/trending`, { headers });
       const data = await response.json();
 
       return (data.coins || []).map((c: any) => c.item?.name || c.name).slice(0, 10);
