@@ -19,7 +19,7 @@ RUN npm install -g bun@1.2.21 turbo@2.3.3
 
 RUN ln -s /usr/bin/python3 /usr/bin/python
 
-COPY package.json turbo.json tsconfig.json lerna.json renovate.json .npmrc ./
+COPY package.json turbo.json tsconfig.json lerna.json renovate.json .npmrc build-utils.ts ./
 COPY scripts ./scripts
 COPY packages ./packages
 
@@ -55,6 +55,7 @@ COPY --from=builder /app/turbo.json ./
 COPY --from=builder /app/tsconfig.json ./
 COPY --from=builder /app/lerna.json ./
 COPY --from=builder /app/renovate.json ./
+COPY --from=builder /app/build-utils.ts ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/scripts ./scripts
@@ -64,4 +65,6 @@ ENV NODE_ENV=production
 EXPOSE 3000
 EXPOSE 50000-50100/udp
 
-CMD ["bun", "run", "start"]
+# Start from the polymarket plugin directory to load Zeracle character
+WORKDIR /app/packages/plugin-polymarket
+CMD ["bun", "../cli/dist/index.js", "start"]
