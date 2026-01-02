@@ -13,7 +13,7 @@ import { DataSourcesService, type MarketSignal, type NewsItem } from './data-sou
 import { TwitterMonitorService, type TwitterAlert } from './twitter-monitor';
 import { PolymarketService } from './polymarket';
 import type { PolymarketMarket } from '../types';
-import { getCurrentETTime, isMarketExpired, detectPastYearMarket, getRelativeTimeContext } from '../providers/timezone';
+import { getCurrentETTime, getRelativeTimeContext } from '../providers/timezone';
 
 export interface TradingSignal {
   id: string;
@@ -110,21 +110,17 @@ export class SignalGeneratorService extends Service {
       twitterService?.scanForAlerts(['crypto', 'politics', 'sports']) || [],
     ]);
 
-    // Filter out expired markets and markets from past years
+    // Filter out closed/archived markets only - trust the API's closed flag
+    // Don't filter by end_date or year in question - markets can be open after end date (awaiting resolution)
     const markets = rawMarkets.filter((market) => {
-      // Check if market end date has passed
-      if (isMarketExpired(market.end_date_iso)) {
-        logger.debug({ market: market.question }, '[SignalGenerator] Skipping expired market');
+      // Trust API's closed flag - if it says closed=false, it's tradeable
+      if (market.closed) {
+        logger.debug({ market: market.question }, '[SignalGenerator] Skipping closed market');
         return false;
       }
 
-      // Check if market question references a past year
-      const pastYearCheck = detectPastYearMarket(market.question, etTime.year);
-      if (pastYearCheck.isPast) {
-        logger.debug(
-          { market: market.question, mentionedYear: pastYearCheck.mentionedYear },
-          '[SignalGenerator] Skipping market referencing past year'
-        );
+      if (market.archived) {
+        logger.debug({ market: market.question }, '[SignalGenerator] Skipping archived market');
         return false;
       }
 

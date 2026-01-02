@@ -278,14 +278,30 @@ export class DataSourcesService extends Service {
       });
       if (filter) params.append('filter', filter);
 
-      const response = await safeFetch(`https://cryptopanic.com/api/v1/posts/?${params}`);
+      // CryptoPanic has different endpoints for free vs pro API keys:
+      // - Free tier: https://cryptopanic.com/api/free/v1/posts/
+      // - Pro tier: https://cryptopanic.com/api/v1/posts/
+      // Try free tier first (most common), fall back to pro if configured
+      const isPro = process.env.CRYPTOPANIC_PRO === 'true';
+      const baseUrl = isPro
+        ? 'https://cryptopanic.com/api/v1/posts/'
+        : 'https://cryptopanic.com/api/free/v1/posts/';
+
+      let response = await safeFetch(`${baseUrl}?${params}`);
+
+      // If free endpoint returns 404, try pro endpoint as fallback
+      if (!isPro && response && response.status === 404) {
+        logger.info('[DataSources] CryptoPanic free endpoint 404, trying pro endpoint');
+        response = await safeFetch(`https://cryptopanic.com/api/v1/posts/?${params}`);
+      }
 
       // Check if response exists and is OK before parsing
       if (!response) {
+        logger.warn('[DataSources] CryptoPanic: No response received');
         return [];
       }
       if (!response.ok) {
-        logger.warn({ status: response.status }, '[DataSources] CryptoPanic API error');
+        logger.warn({ status: response.status, statusText: response.statusText }, '[DataSources] CryptoPanic API error - check if API key is valid and endpoint is correct');
         return [];
       }
 
