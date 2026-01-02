@@ -31,6 +31,7 @@ import { logger } from '@elizaos/core';
 import { z } from 'zod';
 
 // Services
+import { TagManagerService } from './services/tag-manager';  // Must be first - other services depend on it
 import { PolymarketService } from './services/polymarket';
 import { DataSourcesService } from './services/data-sources';
 import { TwitterMonitorService } from './services/twitter-monitor';
@@ -145,8 +146,9 @@ export const polymarketPlugin: Plugin = {
     }
   },
 
-  // Services
+  // Services - TagManagerService MUST be first for category filtering to work
   services: [
+    TagManagerService,
     PolymarketService,
     DataSourcesService,
     TwitterMonitorService,

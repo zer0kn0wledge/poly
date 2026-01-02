@@ -9,6 +9,7 @@ import { Service, logger, type IAgentRuntime } from '@elizaos/core';
 import { ClobClient } from '@polymarket/clob-client';
 import { Wallet, providers } from 'ethers';
 import { getCurrentETTime } from '../providers/timezone';
+import type { TagManagerService } from './tag-manager';
 
 const { JsonRpcProvider } = providers;
 
@@ -102,6 +103,7 @@ export class PolymarketService extends Service {
   private dailyPnl: number = 0;
   private lastPnlReset: Date = new Date();
   private allowancesApproved: boolean = false;
+  private tagManager: TagManagerService | null = null;
 
   constructor(runtime: IAgentRuntime) {
     super(runtime);
@@ -123,6 +125,16 @@ export class PolymarketService extends Service {
   }
 
   private async initialize(): Promise<void> {
+    // Get TagManager service for category filtering
+    try {
+      this.tagManager = this.runtime.getService<TagManagerService>('tag-manager');
+      if (this.tagManager) {
+        logger.info('[PolymarketService] TagManager service connected');
+      }
+    } catch {
+      logger.warn('[PolymarketService] TagManager service not available');
+    }
+
     const privateKey = this.runtime.getSetting('POLYMARKET_PRIVATE_KEY');
 
     if (!privateKey) {
@@ -578,6 +590,298 @@ export class PolymarketService extends Service {
 
     // Sort by volume and return top results
     return allMarkets
+      .sort((a, b) => (b.volume_num || 0) - (a.volume_num || 0))
+      .slice(0, limit);
+  }
+
+  // ============================================================
+  // EVENTS API METHODS (RECOMMENDED APPROACH)
+  // ============================================================
+
+  /**
+   * Fetch events from Polymarket using the Events API
+   * This is the RECOMMENDED approach as Events contain Markets and provide better metadata
+   */
+  async getEvents(options: {
+    limit?: number;
+    offset?: number;
+    tagId?: string;
+    minVolume?: number;
+    sortBy?: 'volume' | 'volume24hr' | 'liquidity';
+    includeResolved?: boolean;
+  } = {}): Promise<any[]> {
+    const {
+      limit = 50,
+      offset = 0,
+      tagId,
+      minVolume,
+      sortBy = 'volume24hr',
+      includeResolved = false
+    } = options;
+
+    const params = new URLSearchParams({
+      limit: Math.min(limit, 100).toString(),
+      offset: offset.toString(),
+      order: sortBy,
+      ascending: 'false',
+      active: 'true',
+      closed: includeResolved ? 'true' : 'false',
+    });
+
+    // CRITICAL: Add tag_id filter for category-based queries
+    if (tagId) {
+      params.append('tag_id', tagId);
+    }
+
+    // Add end_date_min to filter out past events
+    if (!includeResolved) {
+      params.append('end_date_min', new Date().toISOString());
+    }
+
+    // Add volume filter
+    if (minVolume) {
+      params.append('volume_num_min', minVolume.toString());
+    }
+
+    const url = `${GAMMA_API_HOST}/events?${params}`;
+    logger.debug(`[PolymarketService] Fetching events: ${url}`);
+
+    try {
+      const response = await safeFetch(url);
+      if (!response || !response.ok) {
+        logger.warn(`[PolymarketService] Events API returned ${response?.status || 'null'}`);
+        return [];
+      }
+
+      const events = await response.json();
+      logger.info({ eventCount: events?.length, tagId }, '[PolymarketService] Fetched events');
+
+      return Array.isArray(events) ? events : [];
+    } catch (error) {
+      logger.error('[PolymarketService] Failed to fetch events:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Extract markets from events
+   */
+  private extractMarketsFromEvents(events: any[]): PolymarketMarket[] {
+    const allMarkets: PolymarketMarket[] = [];
+    const seenIds = new Set<string>();
+
+    for (const event of events) {
+      if (!event.markets || !Array.isArray(event.markets)) continue;
+
+      for (const m of event.markets) {
+        const conditionId = m.conditionId || m.condition_id;
+        if (!conditionId || seenIds.has(conditionId)) continue;
+
+        // Validate market is tradeable
+        const endDate = new Date(m.endDate || m.end_date_iso || '');
+        if (endDate < new Date()) continue;
+
+        // Check prices aren't extreme (already resolved)
+        try {
+          const prices = JSON.parse(m.outcomePrices || '["0.5", "0.5"]');
+          const yesPrice = parseFloat(prices[0]);
+          if (yesPrice <= 0.02 || yesPrice >= 0.98) continue;
+        } catch {
+          // Skip if can't parse
+        }
+
+        seenIds.add(conditionId);
+
+        // Convert to PolymarketMarket format
+        const market: PolymarketMarket = {
+          condition_id: conditionId,
+          question_id: m.questionId || m.question_id,
+          question: m.question || event.title || '',
+          description: m.description || event.description || '',
+          market_slug: m.slug || m.market_slug || '',
+          end_date_iso: m.endDate || m.end_date_iso || '',
+          game_start_time: m.gameStartTime,
+          tokens: this.parseTokens(m),
+          active: m.active ?? true,
+          closed: m.closed ?? false,
+          archived: m.archived ?? false,
+          accepting_orders: m.acceptingOrders ?? true,
+          minimum_order_size: parseFloat(m.minimumOrderSize || '1'),
+          minimum_tick_size: parseFloat(m.minimumTickSize || '0.01'),
+          neg_risk: m.negRisk ?? false,
+          volume: parseFloat(m.volume || '0'),
+          volume_num: parseFloat(m.volumeNum || m.volume || '0'),
+          liquidity: parseFloat(m.liquidityNum || m.liquidity || '0'),
+          spread: parseFloat(m.spread || '0'),
+        };
+
+        allMarkets.push(market);
+      }
+    }
+
+    return allMarkets;
+  }
+
+  /**
+   * Get sports markets using the dedicated /sports endpoint for tag IDs
+   * This is the CORRECT way to fetch sports markets
+   */
+  async getSportsMarkets(limit = 20): Promise<PolymarketMarket[]> {
+    const allMarkets: PolymarketMarket[] = [];
+    const seenIds = new Set<string>();
+
+    // Get sports-specific tag IDs
+    let sportsTagIds: string[] = [];
+
+    if (this.tagManager) {
+      sportsTagIds = this.tagManager.getSportsTagIds();
+    }
+
+    if (sportsTagIds.length === 0) {
+      // Fallback: fetch from /sports endpoint directly
+      try {
+        const response = await safeFetch(`${GAMMA_API_HOST}/sports`);
+        if (response && response.ok) {
+          const sports = await response.json();
+          for (const sport of sports) {
+            if (sport.tags) {
+              const tags = typeof sport.tags === 'string'
+                ? sport.tags.split(',').map((t: string) => t.trim())
+                : [sport.tags];
+              sportsTagIds.push(...tags);
+            }
+          }
+          sportsTagIds = [...new Set(sportsTagIds)];
+        }
+      } catch (error) {
+        logger.warn('[PolymarketService] Failed to fetch sports tags:', error);
+      }
+    }
+
+    logger.info({ tagCount: sportsTagIds.length }, '[PolymarketService] Sports tag IDs');
+
+    // Fetch events for each sports tag (limit to prevent too many API calls)
+    for (const tagId of sportsTagIds.slice(0, 5)) {
+      try {
+        const events = await this.getEvents({ tagId, limit: limit * 2 });
+        const markets = this.extractMarketsFromEvents(events);
+
+        for (const market of markets) {
+          if (!seenIds.has(market.condition_id)) {
+            // Verify it's actually a sports market
+            if (this.verifyCategoryMatch(market, 'sports')) {
+              seenIds.add(market.condition_id);
+              allMarkets.push(market);
+            }
+          }
+        }
+      } catch (error) {
+        logger.warn({ tagId, error }, '[PolymarketService] Failed to fetch sports tag');
+      }
+    }
+
+    // If we didn't get enough from Events API, fallback to keyword search
+    if (allMarkets.length < 5) {
+      logger.info('[PolymarketService] Supplementing sports with keyword search');
+      const keywordMarkets = await this.getMarketsByCategory('sports', limit);
+      for (const market of keywordMarkets) {
+        if (!seenIds.has(market.condition_id)) {
+          seenIds.add(market.condition_id);
+          allMarkets.push(market);
+        }
+      }
+    }
+
+    logger.info({ found: allMarkets.length }, '[PolymarketService] Sports markets fetched');
+
+    // Sort by volume and return
+    return allMarkets
+      .sort((a, b) => (b.volume_num || 0) - (a.volume_num || 0))
+      .slice(0, limit);
+  }
+
+  /**
+   * Get crypto markets
+   */
+  async getCryptoMarkets(limit = 20): Promise<PolymarketMarket[]> {
+    return this.getMarketsByCategoryWithTags('crypto', limit);
+  }
+
+  /**
+   * Get politics markets
+   */
+  async getPoliticsMarkets(limit = 20): Promise<PolymarketMarket[]> {
+    return this.getMarketsByCategoryWithTags('politics', limit);
+  }
+
+  /**
+   * Get economics/finance markets
+   */
+  async getEconomicsMarkets(limit = 20): Promise<PolymarketMarket[]> {
+    return this.getMarketsByCategoryWithTags('economics', limit);
+  }
+
+  /**
+   * Get markets by category using TagManager for proper tag_id filtering
+   */
+  private async getMarketsByCategoryWithTags(category: string, limit = 20): Promise<PolymarketMarket[]> {
+    const allMarkets: PolymarketMarket[] = [];
+    const seenIds = new Set<string>();
+
+    // Get tag IDs from TagManager
+    const tagIds = this.tagManager?.getTagIdsForCategory(category) || [];
+
+    logger.info({ category, tagCount: tagIds.length }, '[PolymarketService] Category tag IDs');
+
+    // Fetch events for each tag
+    for (const tagId of tagIds.slice(0, 3)) {
+      try {
+        const events = await this.getEvents({ tagId, limit: limit * 2 });
+        const markets = this.extractMarketsFromEvents(events);
+
+        for (const market of markets) {
+          if (!seenIds.has(market.condition_id)) {
+            if (this.verifyCategoryMatch(market, category)) {
+              seenIds.add(market.condition_id);
+              allMarkets.push(market);
+            }
+          }
+        }
+      } catch (error) {
+        logger.warn({ tagId, error }, '[PolymarketService] Failed to fetch category tag');
+      }
+    }
+
+    // If we didn't get enough, supplement with keyword search
+    if (allMarkets.length < 5) {
+      logger.info({ category }, '[PolymarketService] Supplementing with keyword search');
+      const keywordMarkets = await this.getMarketsByCategory(category, limit);
+      for (const market of keywordMarkets) {
+        if (!seenIds.has(market.condition_id)) {
+          seenIds.add(market.condition_id);
+          allMarkets.push(market);
+        }
+      }
+    }
+
+    return allMarkets
+      .sort((a, b) => (b.volume_num || 0) - (a.volume_num || 0))
+      .slice(0, limit);
+  }
+
+  /**
+   * Get top markets by 24h volume
+   */
+  async getTopMarketsByVolume24h(limit = 20): Promise<PolymarketMarket[]> {
+    const events = await this.getEvents({
+      limit: limit * 2,
+      sortBy: 'volume24hr',
+      minVolume: 10000
+    });
+
+    const markets = this.extractMarketsFromEvents(events);
+
+    return markets
       .sort((a, b) => (b.volume_num || 0) - (a.volume_num || 0))
       .slice(0, limit);
   }

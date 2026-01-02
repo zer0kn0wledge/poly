@@ -459,9 +459,23 @@ export const viewMarketsAction: Action = {
       const searchParams = { includeResolution };
 
       if (detectedCategory) {
-        // Use category-based search for better filtering
-        // Note: getMarketsByCategory uses getMarkets internally, which now respects includeResolution
-        markets = await service.getMarketsByCategory(detectedCategory, limit * 2);
+        // Use category-specific methods that use proper tag_id filtering
+        const categoryLower = detectedCategory.toLowerCase();
+        logger.info({ category: categoryLower }, '[ViewMarketsAction] Using category-specific method');
+
+        if (categoryLower === 'sports') {
+          markets = await service.getSportsMarkets(limit * 2);
+        } else if (categoryLower === 'crypto') {
+          markets = await service.getCryptoMarkets(limit * 2);
+        } else if (categoryLower === 'politics') {
+          markets = await service.getPoliticsMarkets(limit * 2);
+        } else if (categoryLower === 'economics' || categoryLower === 'finance') {
+          markets = await service.getEconomicsMarkets(limit * 2);
+        } else {
+          // Fallback to keyword-based search for other categories
+          markets = await service.getMarketsByCategory(detectedCategory, limit * 2);
+        }
+
         searchContext = `${detectedCategory.toUpperCase()} markets`;
         if (includeResolution) searchContext += ' (including resolution phase)';
         logger.info({ category: detectedCategory, count: markets.length, includeResolution }, '[ViewMarketsAction] Category search');

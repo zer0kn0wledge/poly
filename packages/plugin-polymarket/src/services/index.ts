@@ -2,6 +2,7 @@
  * Polymarket Services
  */
 
+export { TagManagerService } from './tag-manager';  // Must be first - other services depend on it
 export { PolymarketService } from './polymarket';
 export { DataSourcesService } from './data-sources';
 export { TwitterMonitorService } from './twitter-monitor';
