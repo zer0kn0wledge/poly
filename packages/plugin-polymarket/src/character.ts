@@ -12,10 +12,10 @@ import { type Character } from '@elizaos/core';
 export const character: Character = {
   name: 'Zeracle',
   plugins: [
-    // Core plugins only - LLM and Twitter are handled directly via our services
     '@elizaos/plugin-sql',
     '@elizaos/plugin-bootstrap',
-    // Note: Polymarket plugin is loaded via project.ts, not here
+    '@elizaos/plugin-anthropic',
+    // Note: Polymarket plugin is loaded via project configuration, not character
   ],
   settings: {
     secrets: {},

@@ -65,6 +65,7 @@ ENV NODE_ENV=production
 EXPOSE 3000
 EXPOSE 50000-50100/udp
 
-# Start with Zeracle character explicitly
+# Run as project - loads polymarketPlugin with all services, actions, providers, and evaluators
+# The project's index.ts defines the Zeracle character + polymarket plugin together
 WORKDIR /app/packages/plugin-polymarket
-CMD ["bun", "../cli/dist/index.js", "start", "--character", "characters/zeracle.json"]
+CMD ["bun", "../cli/dist/index.js", "start"]
