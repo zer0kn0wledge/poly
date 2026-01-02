@@ -282,7 +282,19 @@ export class DataSourcesService extends Service {
       const response = await fetch(url, { headers });
       const data = await response.json();
 
-      return (data || []).map((coin: any) => ({
+      // Handle error responses from CoinGecko API
+      if (!response.ok || data?.error || data?.status?.error_code) {
+        logger.warn({ status: response.status, error: data?.error || data?.status }, '[DataSources] CoinGecko API error');
+        return [];
+      }
+
+      // Ensure data is an array before mapping
+      if (!Array.isArray(data)) {
+        logger.warn({ dataType: typeof data }, '[DataSources] CoinGecko returned non-array');
+        return [];
+      }
+
+      return data.map((coin: any) => ({
         symbol: coin.symbol?.toUpperCase(),
         name: coin.name,
         price: coin.current_price,

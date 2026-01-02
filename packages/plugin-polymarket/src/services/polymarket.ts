@@ -224,8 +224,9 @@ export class PolymarketService extends Service {
     try {
       const queryParams = new URLSearchParams();
       if (params.query) queryParams.set('query', params.query);
-      if (params.active !== undefined) queryParams.set('active', String(params.active));
-      if (params.closed !== undefined) queryParams.set('closed', String(params.closed));
+      // Default to active=true, closed=false for tradeable markets
+      queryParams.set('active', String(params.active ?? true));
+      queryParams.set('closed', String(params.closed ?? false));
       if (params.limit) queryParams.set('limit', String(params.limit));
       if (params.offset) queryParams.set('offset', String(params.offset));
 
@@ -235,7 +236,35 @@ export class PolymarketService extends Service {
       }
 
       const data = await response.json();
-      return this.parseMarkets(data);
+      let markets = this.parseMarkets(data);
+
+      // Filter out markets that aren't tradeable
+      markets = markets.filter(m => {
+        // Must be active and not closed
+        if (!m.active || m.closed || m.archived) return false;
+
+        // Must be accepting orders
+        if (!m.accepting_orders) return false;
+
+        // Must have valid token IDs (not synthetic with -0/-1 suffix)
+        const hasValidTokens = m.tokens.every(t =>
+          t.token_id &&
+          !t.token_id.endsWith('-0') &&
+          !t.token_id.endsWith('-1') &&
+          t.token_id.length > 10
+        );
+        if (!hasValidTokens) return false;
+
+        // Filter out expired markets
+        if (m.end_date_iso) {
+          const endDate = new Date(m.end_date_iso);
+          if (endDate < new Date()) return false;
+        }
+
+        return true;
+      });
+
+      return markets;
     } catch (error) {
       logger.error({ error }, '[PolymarketService] Failed to fetch markets');
       throw error;
@@ -321,14 +350,31 @@ export class PolymarketService extends Service {
       throw new Error('Cannot place orders in read-only mode. Configure POLYMARKET_PRIVATE_KEY.');
     }
 
+    // Validate token ID format (skip synthetic IDs)
+    if (!params.tokenId || params.tokenId.endsWith('-0') || params.tokenId.endsWith('-1')) {
+      throw new Error(`Invalid token ID format: ${params.tokenId}. This market may not be tradeable.`);
+    }
+
     // Validate against risk settings
     await this.validateOrderRisk(params);
 
     try {
-      const orderType = params.orderType ?? 'GTC';
+      // First verify the market exists and has an orderbook
+      let book;
+      try {
+        book = await this.getOrderBook(params.tokenId);
+      } catch (bookError: any) {
+        // Check if it's a market not found error
+        if (bookError?.message?.includes('404') || bookError?.message?.includes('not found')) {
+          throw new Error(`Market not found or no orderbook exists for token ${params.tokenId}. Market may be closed.`);
+        }
+        throw bookError;
+      }
 
-      // Get market info for tick size
-      const book = await this.getOrderBook(params.tokenId);
+      // Validate order book has liquidity
+      if (!book || (book.bids.length === 0 && book.asks.length === 0)) {
+        throw new Error(`No liquidity available for token ${params.tokenId}`);
+      }
 
       const order = await this.client!.createAndPostOrder({
         tokenID: params.tokenId,
@@ -357,7 +403,13 @@ export class PolymarketService extends Service {
         avgFillPrice: params.price, // Approximate
         transactionHash: order.transactionsHashes?.[0],
       };
-    } catch (error) {
+    } catch (error: any) {
+      // Provide more specific error messages
+      const errorMsg = error?.message || String(error);
+      if (errorMsg.includes('minimum_tick_size') || errorMsg.includes('undefined is not an object')) {
+        logger.error({ tokenId: params.tokenId }, '[PolymarketService] Market appears to be closed or invalid');
+        throw new Error(`Cannot trade token ${params.tokenId}: market may be closed or invalid`);
+      }
       logger.error({ error, params }, '[PolymarketService] Failed to place order');
       throw error;
     }
