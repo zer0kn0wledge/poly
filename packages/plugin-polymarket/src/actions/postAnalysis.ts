@@ -1,9 +1,9 @@
 /**
- * POST_ANALYSIS Action
+ * POST_ANALYSIS Action - CRYPTO PRICE ANALYSIS ONLY
  *
- * Allows on-demand Twitter posting of market analysis.
- * Users can trigger analysis tweets for specific markets,
- * categories, or general market updates via the web UI.
+ * Posts crypto price prediction analysis to Twitter.
+ * Uses CoinGecko technical analysis data to generate informed posts.
+ * NO politics, NO sports - ONLY crypto price predictions.
  */
 
 import type {
@@ -15,16 +15,13 @@ import type {
   State,
 } from '@elizaos/core';
 import { logger, ModelType } from '@elizaos/core';
-import { PolymarketService } from '../services/polymarket';
 import { TwitterService } from '../services/twitter';
-import { ScheduledPostsService } from '../services/scheduled-posts';
-import { DataSourcesService } from '../services/data-sources';
-import { MarketIntelligenceService } from '../services/market-intelligence';
-import { getCurrentETTime } from '../providers/timezone';
-import type { PolymarketMarket } from '../types';
+import { EdgeCalculatorService, type TradingOpportunity } from '../services/edge-calculator.service';
+import { CoinGeckoDataService } from '../services/coingecko-data.service';
+import { CryptoMarketDiscoveryService } from '../services/crypto-market-discovery.service';
 
 /**
- * Sanitize text - remove emojis and hashtags.
+ * Sanitize text - remove emojis, hashtags, and XML tags.
  */
 function sanitizeText(text: string): string {
   if (!text) return '';
@@ -39,86 +36,57 @@ function sanitizeText(text: string): string {
     .replace(/[\u{1F900}-\u{1F9FF}]/gu, '')
     .replace(/[\u{1FA00}-\u{1FA6F}]/gu, '')
     .replace(/[\u{1FA70}-\u{1FAFF}]/gu, '')
-    .replace(/#\w+/g, '') // Remove hashtags
-    .replace(/\s+/g, ' ') // Normalize whitespace
+    .replace(/<[^>]*>/g, '')  // Remove XML/HTML tags
+    .replace(/#\w+/g, '')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
-// Post types
-type PostType = 'market' | 'category' | 'update' | 'daily' | 'weekly' | 'custom';
-
 /**
- * Detect post type from user message
+ * Detect which crypto the user wants to post about
  */
-function detectPostType(text: string): { type: PostType; target?: string } {
+function detectCrypto(text: string): string | null {
   const lowerText = text.toLowerCase();
+  const coinMap: Record<string, string> = {
+    'bitcoin': 'bitcoin',
+    'btc': 'bitcoin',
+    'ethereum': 'ethereum',
+    'eth': 'ethereum',
+    'solana': 'solana',
+    'sol': 'solana',
+    'doge': 'dogecoin',
+    'dogecoin': 'dogecoin',
+    'xrp': 'ripple',
+    'cardano': 'cardano',
+    'ada': 'cardano',
+    'bnb': 'binancecoin',
+    'avax': 'avalanche-2',
+  };
 
-  // Check for daily/weekly triggers
-  if (lowerText.includes('daily') && (lowerText.includes('update') || lowerText.includes('post'))) {
-    return { type: 'daily' };
-  }
-  if (lowerText.includes('weekly') && (lowerText.includes('summary') || lowerText.includes('post'))) {
-    return { type: 'weekly' };
-  }
-
-  // Check for market update
-  if (lowerText.includes('market update') || lowerText.includes('update post')) {
-    return { type: 'update' };
-  }
-
-  // Check for category post
-  const categories = ['crypto', 'politics', 'sports', 'tech', 'finance', 'world'];
-  for (const cat of categories) {
-    if (lowerText.includes(cat)) {
-      return { type: 'category', target: cat };
+  for (const [keyword, coinId] of Object.entries(coinMap)) {
+    if (lowerText.includes(keyword)) {
+      return coinId;
     }
   }
-
-  // Check for specific market post
-  const quotedMatch = text.match(/"([^"]+)"/);
-  if (quotedMatch) {
-    return { type: 'market', target: quotedMatch[1] };
-  }
-
-  // Try to extract market from "post about X"
-  const postAboutMatch = lowerText.match(/(?:post|tweet)(?:\s+about)?\s+(.+?)(?:\s+on\s+twitter|\s+market|$)/i);
-  if (postAboutMatch) {
-    return { type: 'market', target: postAboutMatch[1].trim() };
-  }
-
-  // Default to general update
-  return { type: 'update' };
+  return null;
 }
 
 export const postAnalysisAction: Action = {
   name: 'POST_ANALYSIS',
   similes: [
-    // Direct posting commands
     'POST_TO_TWITTER',
     'TWEET_ANALYSIS',
     'SHARE_ANALYSIS',
     'TWITTER_UPDATE',
-    'POST_UPDATE',
     'TWEET_MARKETS',
-    // Alternative phrasings
     'SEND_TWEET',
     'PUBLISH_TWEET',
     'TWITTER_POST',
     'MAKE_TWEET',
-    'WRITE_TWEET',
-    // Analysis sharing
-    'SHARE_ON_TWITTER',
-    'POST_MARKET_UPDATE',
-    'TWEET_UPDATE',
-    'SHARE_MARKETS',
-    // General posting capabilities
-    'CAN_YOU_TWEET',
-    'CAN_YOU_POST',
-    'POST_SOMETHING',
-    'TWEET_SOMETHING',
-    'SHARE_SOMETHING',
+    'POST_CRYPTO',
+    'TWEET_CRYPTO',
   ],
-  description: 'Post market analysis or updates to Twitter on demand',
+  description: 'Post crypto price prediction analysis to Twitter',
 
   validate: async (
     runtime: IAgentRuntime,
@@ -127,21 +95,18 @@ export const postAnalysisAction: Action = {
   ): Promise<boolean> => {
     const text = message.content.text?.toLowerCase() || '';
 
-    // AGGRESSIVE: Any mention of twitter/tweet/post should trigger this action
-    // This is the PRIMARY action for all Twitter posting - be liberal in matching
     const twitterTriggers = [
       'tweet', 'twitter', 'post this', 'share this', 'post it',
-      'share it', 'put this on', 'send to twitter', 'post on x',
-      'share on x', 'post analysis', 'tweet analysis', 'x.com',
-      'can you tweet', 'can you post', 'please tweet', 'please post',
-      'would you tweet', 'could you post', 'make a tweet', 'send tweet',
+      'share it', 'send to twitter', 'post on x', 'share on x',
+      'post analysis', 'tweet analysis', 'can you tweet', 'can you post',
+      'please tweet', 'please post', 'make a tweet', 'send tweet',
       'publish', 'post to', 'share to', 'tweet about', 'post about'
     ];
 
     const shouldTrigger = twitterTriggers.some((t) => text.includes(t));
 
     if (shouldTrigger) {
-      logger.info('[POST_ANALYSIS] Validation PASSED - twitter request detected', { text: text.slice(0, 50) });
+      logger.info('[POST_ANALYSIS] Validation PASSED - twitter request detected');
     }
 
     return shouldTrigger;
@@ -157,10 +122,9 @@ export const postAnalysisAction: Action = {
   ): Promise<ActionResult> => {
     try {
       const twitterService = runtime.getService<TwitterService>('twitter');
-      const scheduledPostsService = runtime.getService<ScheduledPostsService>('scheduled-posts');
-      const polymarketService = runtime.getService<PolymarketService>('polymarket');
-      const dataSourcesService = runtime.getService<DataSourcesService>('data-sources');
-      const intelligenceService = runtime.getService<MarketIntelligenceService>('market-intelligence');
+      const edgeCalculator = runtime.getService<EdgeCalculatorService>('edge-calculator');
+      const coinGeckoService = runtime.getService<CoinGeckoDataService>('coingecko-data');
+      const discoveryService = runtime.getService<CryptoMarketDiscoveryService>('crypto-market-discovery');
 
       if (!twitterService?.isAvailable()) {
         const errorMsg = 'Twitter service not available. Please check Twitter API credentials.';
@@ -169,89 +133,83 @@ export const postAnalysisAction: Action = {
       }
 
       const text = message.content.text || '';
-      const { type, target } = detectPostType(text);
-      const etTime = getCurrentETTime();
+      const targetCoin = detectCrypto(text);
 
-      logger.info({ type, target }, '[POST_ANALYSIS] Processing post request');
+      logger.info({ targetCoin }, '[POST_ANALYSIS] Processing crypto analysis post');
 
       if (callback) {
-        await callback({ text: `Preparing ${type} post${target ? ` for "${target}"` : ''}...` });
+        await callback({ text: `Preparing crypto price analysis${targetCoin ? ` for ${targetCoin}` : ''}...` });
       }
 
       let tweetContent: string | null = null;
-      let tweetResult: { id: string; url: string } | null = null;
 
-      switch (type) {
-        case 'daily':
-          if (scheduledPostsService) {
-            const result = await scheduledPostsService.forceDailyUpdate();
-            if (result) {
-              tweetResult = { id: result, url: `https://twitter.com/i/status/${result}` };
-            }
+      // Try to get edge-calculated opportunities for richer content
+      if (edgeCalculator) {
+        try {
+          const opportunities = await edgeCalculator.findOpportunities();
+          let targetOpp: TradingOpportunity | undefined;
+
+          if (targetCoin) {
+            targetOpp = opportunities.find(o => o.market.coin === targetCoin);
+          } else {
+            // Get best opportunity
+            targetOpp = opportunities.find(o => o.rating === 'STRONG_BUY' || o.rating === 'BUY');
           }
-          break;
 
-        case 'weekly':
-          if (scheduledPostsService) {
-            const result = await scheduledPostsService.forceWeeklySummary();
-            if (result) {
-              tweetResult = { id: result, url: `https://twitter.com/i/status/${result}` };
-            }
+          if (targetOpp) {
+            tweetContent = formatOpportunityTweet(targetOpp);
           }
-          break;
-
-        case 'update':
-          if (scheduledPostsService) {
-            const result = await scheduledPostsService.forceMarketUpdate();
-            if (result) {
-              tweetResult = { id: result, url: `https://twitter.com/i/status/${result}` };
-            }
-          }
-          break;
-
-        case 'category':
-          if (target && polymarketService) {
-            tweetContent = await generateCategoryTweet(
-              runtime,
-              polymarketService,
-              dataSourcesService,
-              target,
-              etTime
-            );
-          }
-          break;
-
-        case 'market':
-          if (target && polymarketService) {
-            tweetContent = await generateMarketTweet(
-              runtime,
-              polymarketService,
-              intelligenceService,
-              target,
-              etTime
-            );
-          }
-          break;
-
-        default:
-          if (scheduledPostsService) {
-            const result = await scheduledPostsService.forceMarketUpdate();
-            if (result) {
-              tweetResult = { id: result, url: `https://twitter.com/i/status/${result}` };
-            }
-          }
-      }
-
-      // Post custom content if generated
-      if (tweetContent && !tweetResult) {
-        const result = await twitterService.tweet(tweetContent);
-        if (result) {
-          tweetResult = { id: result.id, url: result.url };
+        } catch (error) {
+          logger.warn({ error: String(error) }, '[POST_ANALYSIS] Edge calculator not available');
         }
       }
 
-      if (tweetResult) {
-        const successMsg = `Posted to Twitter successfully.\n\nTweet ID: ${tweetResult.id}\nURL: ${tweetResult.url}`;
+      // Fallback: generate from CoinGecko data directly
+      if (!tweetContent && coinGeckoService) {
+        const coin = targetCoin || 'bitcoin';
+        try {
+          const analysisData = await coinGeckoService.getFullAnalysisData(coin);
+          if (analysisData) {
+            tweetContent = formatPriceTweet(coin, analysisData);
+          }
+        } catch (error) {
+          logger.warn({ error: String(error) }, '[POST_ANALYSIS] CoinGecko fetch failed');
+        }
+      }
+
+      // Last resort: simple market listing
+      if (!tweetContent && discoveryService) {
+        try {
+          const markets = await discoveryService.getCryptoPriceMarkets(1000, 5000);
+          const market = targetCoin
+            ? markets.find(m => m.coin === targetCoin)
+            : markets[0];
+
+          if (market) {
+            tweetContent = `${market.coinSymbol} Price Market\n\n`;
+            tweetContent += `Target: $${market.targetPrice.toLocaleString()}\n`;
+            tweetContent += `Market odds: ${(market.yesPrice * 100).toFixed(0)}% YES\n`;
+            tweetContent += `Volume: $${(market.volume / 1000).toFixed(0)}K\n`;
+            tweetContent += `Expires: ${market.daysToExpiry.toFixed(0)} days`;
+          }
+        } catch (error) {
+          logger.warn({ error: String(error) }, '[POST_ANALYSIS] Discovery failed');
+        }
+      }
+
+      if (!tweetContent) {
+        const errorMsg = 'Could not generate crypto analysis. Please try again.';
+        if (callback) await callback({ text: errorMsg, error: true });
+        return { success: false, error: errorMsg };
+      }
+
+      // Sanitize and post
+      tweetContent = sanitizeText(tweetContent).slice(0, 280);
+
+      const result = await twitterService.tweet(tweetContent);
+
+      if (result) {
+        const successMsg = `Posted to Twitter successfully.\n\nTweet: ${tweetContent}\n\nURL: ${result.url}`;
         if (callback) {
           await callback({
             text: successMsg,
@@ -261,7 +219,7 @@ export const postAnalysisAction: Action = {
         return {
           success: true,
           text: successMsg,
-          data: { tweetId: tweetResult.id, url: tweetResult.url },
+          data: { tweetId: result.id, url: result.url },
         };
       } else {
         const errorMsg = 'Failed to post to Twitter. Please try again.';
@@ -287,12 +245,12 @@ export const postAnalysisAction: Action = {
     [
       {
         name: '{{userName}}',
-        content: { text: 'Post a market update to Twitter' },
+        content: { text: 'Tweet about BTC markets' },
       },
       {
         name: '{{agentName}}',
         content: {
-          text: 'Posted to Twitter successfully.\n\nTweet ID: 1234567890\nURL: https://twitter.com/i/status/1234567890',
+          text: 'Posted to Twitter successfully.\n\nTweet: BTC at $97,500 | RSI 58 | MACD bullish\n$100k target market: 65% YES\nEdge: +8% based on TA\nTrend: BULLISH\n\nURL: https://twitter.com/i/status/1234567890',
           action: 'POST_ANALYSIS',
         },
       },
@@ -300,25 +258,12 @@ export const postAnalysisAction: Action = {
     [
       {
         name: '{{userName}}',
-        content: { text: 'Tweet about the crypto markets' },
+        content: { text: 'Post crypto analysis to Twitter' },
       },
       {
         name: '{{agentName}}',
         content: {
-          text: 'Posted to Twitter successfully.\n\nTweet ID: 1234567891\nURL: https://twitter.com/i/status/1234567891',
-          action: 'POST_ANALYSIS',
-        },
-      },
-    ],
-    [
-      {
-        name: '{{userName}}',
-        content: { text: 'Post the daily update now' },
-      },
-      {
-        name: '{{agentName}}',
-        content: {
-          text: 'Posted to Twitter successfully.\n\nTweet ID: 1234567892\nURL: https://twitter.com/i/status/1234567892',
+          text: 'Posted to Twitter successfully.\n\nTweet: ETH Price Analysis\nCurrent: $3,650 | Target: $4,000\nRSI: 62 (neutral) | MACD: bullish\nMarket: 45% YES | Model: 52%\nEdge: +7%\n\nURL: https://twitter.com/i/status/1234567891',
           action: 'POST_ANALYSIS',
         },
       },
@@ -327,128 +272,40 @@ export const postAnalysisAction: Action = {
 };
 
 /**
- * Generate tweet for a specific category
+ * Format opportunity into tweet
  */
-async function generateCategoryTweet(
-  runtime: IAgentRuntime,
-  polymarketService: PolymarketService,
-  dataSourcesService: DataSourcesService | null,
-  category: string,
-  etTime: ReturnType<typeof getCurrentETTime>
-): Promise<string | null> {
-  try {
-    const markets = await polymarketService.getMarketsByCategory(category, 10);
-    if (markets.length === 0) return null;
+function formatOpportunityTweet(opp: TradingOpportunity): string {
+  const coin = opp.market.coinSymbol;
+  const price = opp.currentPrice.toLocaleString();
+  const target = opp.targetPrice.toLocaleString();
+  const ta = opp.technicalAnalysis;
+  const edgePct = opp.edge > 0 ? `+${opp.edgePercent.toFixed(0)}` : opp.edgePercent.toFixed(0);
 
-    // Get top 3 by volume
-    const topMarkets = markets
-      .sort((a, b) => (b.volume_num || 0) - (a.volume_num || 0))
-      .slice(0, 3);
+  let tweet = `${coin} at $${price}\n\n`;
+  tweet += `Target: $${target}\n`;
+  tweet += `RSI: ${ta.rsi.toFixed(0)} | MACD: ${ta.macdSignal}\n`;
+  tweet += `Market: ${(opp.marketImpliedProbability * 100).toFixed(0)}% | Model: ${(opp.estimatedProbability * 100).toFixed(0)}%\n`;
+  tweet += `Edge: ${edgePct}% on ${opp.side}\n`;
+  tweet += `Rating: ${opp.rating}`;
 
-    // Get news context
-    let newsContext = '';
-    if (dataSourcesService) {
-      const validCategories = ['politics', 'crypto', 'sports', 'economy', 'tech', 'geopolitics'] as const;
-      type NewsCategory = typeof validCategories[number];
-      const newsCategory = validCategories.includes(category as NewsCategory) ? category as NewsCategory : 'politics';
-      const news = await dataSourcesService.getNewsByCategory(newsCategory);
-      newsContext = news.slice(0, 5).map((n) => `- ${n.title}`).join('\n');
-    }
-
-    const marketsText = topMarkets.map((m, i) => {
-      const yesPrice = m.tokens.find((t) => t.outcome.toLowerCase() === 'yes')?.price || 0.5;
-      const vol = m.volume_num >= 1000000
-        ? `$${(m.volume_num / 1000000).toFixed(1)}M`
-        : `$${((m.volume_num || 0) / 1000).toFixed(0)}K`;
-      return `${i + 1}. "${m.question.slice(0, 60)}" - ${(yesPrice * 100).toFixed(0)}% (${vol})`;
-    }).join('\n');
-
-    const prompt = `Generate a professional tweet about ${category.toUpperCase()} prediction markets.
-
-Time: ${etTime.dateStr} ${etTime.timeStr} ET
-
-MARKETS:
-${marketsText}
-
-${newsContext ? `NEWS:\n${newsContext}` : ''}
-
-Write a professional tweet (max 280 chars) that:
-1. Highlights 1-2 key markets with odds
-2. Provides brief analytical insight
-3. Professional tone - no emojis, no hashtags
-
-Return ONLY the tweet text.`;
-
-    const response = await runtime.useModel(ModelType.TEXT_SMALL, { prompt });
-
-    if (typeof response === 'string') {
-      return sanitizeText(response).slice(0, 280);
-    }
-    return null;
-  } catch (error) {
-    logger.error({ error, category }, '[POST_ANALYSIS] Category tweet generation failed');
-    return null;
-  }
+  return tweet;
 }
 
 /**
- * Generate tweet for a specific market
+ * Format CoinGecko data into tweet
  */
-async function generateMarketTweet(
-  runtime: IAgentRuntime,
-  polymarketService: PolymarketService,
-  intelligenceService: MarketIntelligenceService | null,
-  marketQuery: string,
-  etTime: ReturnType<typeof getCurrentETTime>
-): Promise<string | null> {
-  try {
-    const markets = await polymarketService.searchMarkets(marketQuery, 1);
-    if (markets.length === 0) return null;
+function formatPriceTweet(coinId: string, data: { price: { usd: number; usd_24h_change: number } }): string {
+  const symbol = coinId.toUpperCase().slice(0, 3);
+  const price = data.price.usd.toLocaleString();
+  const change = data.price.usd_24h_change;
+  const changeStr = change >= 0 ? `+${change.toFixed(1)}%` : `${change.toFixed(1)}%`;
 
-    const market = markets[0];
-    const yesToken = market.tokens.find((t) => t.outcome.toLowerCase() === 'yes');
-    const yesPrice = yesToken?.price || 0.5;
+  let tweet = `${symbol} Price Update\n\n`;
+  tweet += `Current: $${price}\n`;
+  tweet += `24h Change: ${changeStr}\n\n`;
+  tweet += `Analyzing Polymarket price targets...`;
 
-    // Get opportunity data if available
-    let opportunityContext = '';
-    if (intelligenceService) {
-      const opportunities = intelligenceService.getOpportunities();
-      const opp = opportunities.find((o) => o.market.condition_id === market.condition_id);
-      if (opp) {
-        opportunityContext = `\nOpportunity Score: ${opp.score}/100 | Direction: ${opp.direction}`;
-      }
-    }
-
-    const vol = market.volume_num >= 1000000
-      ? `$${(market.volume_num / 1000000).toFixed(1)}M`
-      : `$${((market.volume_num || 0) / 1000).toFixed(0)}K`;
-
-    const prompt = `Generate a professional tweet about this prediction market.
-
-MARKET: "${market.question}"
-YES Price: ${(yesPrice * 100).toFixed(0)}%
-Volume: ${vol}
-${opportunityContext}
-
-Time: ${etTime.dateStr} ${etTime.timeStr} ET
-
-Write a professional tweet (max 280 chars) that:
-1. States the market and current odds
-2. Provides brief analytical context
-3. Professional tone - no emojis, no hashtags, no exclamation marks
-
-Return ONLY the tweet text.`;
-
-    const response = await runtime.useModel(ModelType.TEXT_SMALL, { prompt });
-
-    if (typeof response === 'string') {
-      return sanitizeText(response).slice(0, 280);
-    }
-    return null;
-  } catch (error) {
-    logger.error({ error, marketQuery }, '[POST_ANALYSIS] Market tweet generation failed');
-    return null;
-  }
+  return tweet;
 }
 
 export default postAnalysisAction;

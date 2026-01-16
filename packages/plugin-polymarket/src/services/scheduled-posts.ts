@@ -1,18 +1,18 @@
 /**
- * Scheduled Posts Service
+ * Scheduled Posts Service - CRYPTO PRICE ANALYSIS ONLY
  *
- * Handles scheduled Twitter posts:
- * - Daily Polymarket Update: Posted every morning with top markets by volume
- * - Weekly Trade Summary: Posted every Friday at 6pm ET with performance analysis
+ * Handles scheduled Twitter posts for crypto price predictions:
+ * - Posts crypto price analysis with technical indicators
+ * - Uses CoinGecko data and edge calculations
+ * - NO politics, NO sports - ONLY crypto price predictions
  */
 
 import { Service, logger, type IAgentRuntime, ModelType } from '@elizaos/core';
-import { getCurrentETTime, getRelativeTimeContext, isMarketExpired, detectPastYearMarket } from '../providers/timezone';
-import { PolymarketService } from './polymarket';
+import { getCurrentETTime } from '../providers/timezone';
 import { TwitterService } from './twitter';
-import { StrategyLearningService, type WeeklyStats } from './strategy-learning';
-import { DataSourcesService } from './data-sources';
-import type { PolymarketMarket } from '../types';
+import { EdgeCalculatorService, type TradingOpportunity } from './edge-calculator.service';
+import { CoinGeckoDataService } from './coingecko-data.service';
+import { CryptoMarketDiscoveryService, type CryptoPriceMarket } from './crypto-market-discovery.service';
 
 // ============= Types =============
 
@@ -89,10 +89,10 @@ export class ScheduledPostsService extends Service {
    * Wait for required services to become available
    */
   private async waitForServices(maxWaitMs: number = 30000): Promise<void> {
-    const requiredServices = ['polymarket', 'twitter'];
+    const requiredServices = ['crypto-market-discovery', 'twitter'];
     const startTime = Date.now();
 
-    logger.info('[ScheduledPosts] Waiting for required services...', { requiredServices });
+    logger.info('[ScheduledPosts] Waiting for required crypto services...', { requiredServices });
 
     while (Date.now() - startTime < maxWaitMs) {
       if (!this.runtime) break;
@@ -301,46 +301,49 @@ export class ScheduledPostsService extends Service {
     }
   }
 
-  // ============= 2-Hour Market Update =============
+  // ============= 2-Hour Crypto Market Update =============
 
   /**
-   * Post a market update every 2 hours with top markets and analysis
+   * Post a crypto price market update every 2 hours
    */
   async postMarketUpdate(): Promise<string | null> {
     if (!this.runtime) return null;
 
     const etTime = getCurrentETTime();
-    logger.info('[ScheduledPosts] Generating 2-hour market update', { hour: etTime.hour, date: etTime.dateStr });
+    logger.info('[ScheduledPosts] Generating crypto price market update', { hour: etTime.hour, date: etTime.dateStr });
 
-    const polymarketService = this.runtime.getService<PolymarketService>('polymarket');
+    const edgeCalculator = this.runtime.getService<EdgeCalculatorService>('edge-calculator');
+    const discoveryService = this.runtime.getService<CryptoMarketDiscoveryService>('crypto-market-discovery');
     const twitterService = this.runtime.getService<TwitterService>('twitter');
 
-    if (!polymarketService || !twitterService?.isAvailable()) {
-      logger.warn('[ScheduledPosts] Required services not available for market update');
+    if (!twitterService?.isAvailable()) {
+      logger.warn('[ScheduledPosts] Twitter service not available');
       return null;
     }
 
     try {
-      // Get trending markets by volume
-      const markets = await polymarketService.getTrendingMarkets({
-        minVolume: 10000,
-        limit: 20,
-        sortBy: 'volume',
-      });
+      let content: string | null = null;
 
-      if (markets.length === 0) {
-        logger.warn('[ScheduledPosts] No markets for 2-hour update');
-        return null;
+      // Try to get opportunities with edge calculation
+      if (edgeCalculator) {
+        const opportunities = await edgeCalculator.findOpportunities();
+        const topOpp = opportunities.find(o => o.rating === 'STRONG_BUY' || o.rating === 'BUY');
+
+        if (topOpp) {
+          content = this.formatCryptoOpportunityTweet(topOpp, etTime);
+        }
       }
 
-      // Select top markets for this update
-      const topMarkets = markets.slice(0, 3);
-
-      // Generate update content
-      const content = await this.generateMarketUpdateContent(topMarkets, etTime);
+      // Fallback to discovery service
+      if (!content && discoveryService) {
+        const markets = await discoveryService.getCryptoPriceMarkets(1000, 5000);
+        if (markets.length > 0) {
+          content = this.formatCryptoMarketTweet(markets.slice(0, 3), etTime);
+        }
+      }
 
       if (!content) {
-        logger.warn('[ScheduledPosts] Failed to generate market update content');
+        logger.warn('[ScheduledPosts] No crypto markets for update');
         return null;
       }
 
@@ -358,12 +361,52 @@ export class ScheduledPostsService extends Service {
         content,
       });
 
-      logger.info({ tweetId: result?.id, hour: etTime.hour }, '[ScheduledPosts] Market update posted');
+      logger.info({ tweetId: result?.id, hour: etTime.hour }, '[ScheduledPosts] Crypto update posted');
       return result?.id || null;
     } catch (error) {
-      logger.error({ error }, '[ScheduledPosts] Failed to post market update');
+      logger.error({ error }, '[ScheduledPosts] Failed to post crypto update');
       return null;
     }
+  }
+
+  /**
+   * Format opportunity into tweet
+   */
+  private formatCryptoOpportunityTweet(
+    opp: TradingOpportunity,
+    etTime: ReturnType<typeof getCurrentETTime>
+  ): string {
+    const coin = opp.market.coinSymbol;
+    const price = opp.currentPrice.toLocaleString();
+    const target = opp.targetPrice.toLocaleString();
+    const ta = opp.technicalAnalysis;
+    const edgePct = opp.edge > 0 ? `+${opp.edgePercent.toFixed(0)}` : opp.edgePercent.toFixed(0);
+
+    let tweet = `${coin} Price Analysis (${etTime.timeStr} ET)\n\n`;
+    tweet += `Current: $${price}\n`;
+    tweet += `Target: $${target}\n`;
+    tweet += `RSI: ${ta.rsi.toFixed(0)} | MACD: ${ta.macdSignal}\n`;
+    tweet += `Market: ${(opp.marketImpliedProbability * 100).toFixed(0)}% | TA Model: ${(opp.estimatedProbability * 100).toFixed(0)}%\n`;
+    tweet += `Edge: ${edgePct}% | ${opp.rating}`;
+
+    return tweet.slice(0, 280);
+  }
+
+  /**
+   * Format crypto markets into tweet
+   */
+  private formatCryptoMarketTweet(
+    markets: CryptoPriceMarket[],
+    etTime: ReturnType<typeof getCurrentETTime>
+  ): string {
+    let tweet = `Crypto Price Markets (${etTime.timeStr} ET)\n\n`;
+
+    for (const m of markets.slice(0, 2)) {
+      tweet += `${m.coinSymbol}: $${m.targetPrice.toLocaleString()} target\n`;
+      tweet += `${(m.yesPrice * 100).toFixed(0)}% YES | $${(m.volume / 1000).toFixed(0)}K vol\n\n`;
+    }
+
+    return tweet.trim().slice(0, 280);
   }
 
   private async generateMarketUpdateContent(
