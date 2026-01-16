@@ -409,8 +409,11 @@ Return ONLY the tweet text.`;
       });
 
       if (typeof response === 'string') {
-        // Remove any emojis and hashtags that might slip through
+        // Remove any emojis, hashtags, and action tags that might slip through
         const cleaned = response
+          // CRITICAL: Remove leaked action tags
+          .replace(/<actions>[\s\S]*?<\/actions>/gi, '')
+          .replace(/<[^>]+>/g, '')
           .replace(/[\u{1F300}-\u{1F9FF}]/gu, '')
           .replace(/[\u{2600}-\u{27BF}]/gu, '')
           .replace(/#\w+/g, '')
@@ -483,8 +486,11 @@ Return ONLY the tweet text.`;
       });
 
       if (typeof response === 'string') {
-        // Remove any emojis and hashtags that might slip through
+        // Remove any emojis, hashtags, and action tags that might slip through
         const cleaned = response
+          // CRITICAL: Remove leaked action tags
+          .replace(/<actions>[\s\S]*?<\/actions>/gi, '')
+          .replace(/<[^>]+>/g, '')
           .replace(/[\u{1F300}-\u{1F9FF}]/gu, '')
           .replace(/[\u{2600}-\u{27BF}]/gu, '')
           .replace(/#\w+/g, '')
@@ -599,8 +605,11 @@ Return ONLY the tweet text.`;
       });
 
       if (typeof response === 'string') {
-        // Remove any emojis and hashtags that might slip through
+        // Remove any emojis, hashtags, and action tags that might slip through
         const cleaned = response
+          // CRITICAL: Remove leaked action tags
+          .replace(/<actions>[\s\S]*?<\/actions>/gi, '')
+          .replace(/<[^>]+>/g, '')
           .replace(/[\u{1F300}-\u{1F9FF}]/gu, '')
           .replace(/[\u{2600}-\u{27BF}]/gu, '')
           .replace(/#\w+/g, '')

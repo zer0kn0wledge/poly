@@ -189,6 +189,14 @@ export class TwitterService extends Service {
 
     const url = 'https://api.twitter.com/2/tweets';
 
+    // CRITICAL: Sanitize text to remove any leaked XML tags
+    const cleanText = this.sanitizeText(text).slice(0, 280);
+
+    if (!cleanText || cleanText.length < 5) {
+      logger.error('[Twitter] Tweet text empty after sanitization', { original: text.slice(0, 100) });
+      return null;
+    }
+
     try {
       const authHeader = this.generateOAuthHeader('POST', url);
 
@@ -198,7 +206,7 @@ export class TwitterService extends Service {
           Authorization: authHeader,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text: cleanText }),
       });
 
       if (!response) {
@@ -429,11 +437,18 @@ ${take}`;
   }
 
   /**
-   * Sanitize text - remove emojis and hashtags
+   * Sanitize text - remove emojis, hashtags, and action tags
    */
   private sanitizeText(text: string): string {
     if (!text) return '';
     return text
+      // CRITICAL: Remove <actions>...</actions> XML tags that leak from prompts
+      .replace(/<actions>[\s\S]*?<\/actions>/gi, '')
+      .replace(/<actions>/gi, '')
+      .replace(/<\/actions>/gi, '')
+      // Remove other XML-like tags that might leak
+      .replace(/<[^>]+>/g, '')
+      // Remove emojis
       .replace(/[\u{1F600}-\u{1F64F}]/gu, '')
       .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')
       .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')

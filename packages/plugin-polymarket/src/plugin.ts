@@ -41,6 +41,7 @@ import { TwitterService } from './services/twitter';
 import { StrategyLearningService } from './services/strategy-learning';
 import { ScheduledPostsService } from './services/scheduled-posts';
 import { MarketIntelligenceService } from './services/market-intelligence';
+import { CryptoPriceStrategyService } from './services/crypto-price-strategy';
 
 // Actions
 import {
@@ -158,6 +159,7 @@ export const polymarketPlugin: Plugin = {
     StrategyLearningService,
     ScheduledPostsService,
     MarketIntelligenceService,
+    CryptoPriceStrategyService,
   ],
 
   // Actions for trading and market interaction
