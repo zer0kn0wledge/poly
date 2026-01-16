@@ -43,6 +43,14 @@ import { ScheduledPostsService } from './services/scheduled-posts';
 import { MarketIntelligenceService } from './services/market-intelligence';
 import { CryptoPriceStrategyService } from './services/crypto-price-strategy';
 
+// New Crypto-Focused Services
+import { CoinGeckoDataService } from './services/coingecko-data.service';
+import { TechnicalAnalysisService } from './services/technical-analysis.service';
+import { CryptoMarketDiscoveryService } from './services/crypto-market-discovery.service';
+import { EdgeCalculatorService } from './services/edge-calculator.service';
+import { TradeExecutorService } from './services/trade-executor.service';
+import { ZeracleOrchestratorService } from './services/zeracle-orchestrator.service';
+
 // Actions
 import {
   buyOutcomeAction,
@@ -106,11 +114,29 @@ const configSchema = z.object({
     .string()
     .optional()
     .transform((val) => val ? parseInt(val) : undefined),
+  // CoinGecko API for technical analysis
+  COINGECKO_API_KEY: z
+    .string()
+    .optional(),
+  // Edge calculation settings
+  POLYMARKET_MIN_EDGE: z
+    .string()
+    .optional()
+    .transform((val) => val ? parseFloat(val) : undefined),
+  POLYMARKET_BANKROLL: z
+    .string()
+    .optional()
+    .transform((val) => val ? parseFloat(val) : undefined),
+  // Dry run mode (no real trades)
+  POLYMARKET_DRY_RUN: z
+    .string()
+    .optional()
+    .transform((val) => val !== 'false'),  // Default true
 });
 
 export const polymarketPlugin: Plugin = {
   name: 'plugin-polymarket',
-  description: 'Polymarket prediction market trading plugin for ElizaOS',
+  description: 'Crypto price prediction trading plugin - uses CoinGecko technical analysis to find edge in Polymarket crypto markets',
 
   config: {
     POLYMARKET_PRIVATE_KEY: process.env.POLYMARKET_PRIVATE_KEY,
@@ -122,6 +148,11 @@ export const polymarketPlugin: Plugin = {
     POLYMARKET_AUTO_TRADE: process.env.POLYMARKET_AUTO_TRADE,
     POLYMARKET_ANALYSIS_INTERVAL: process.env.POLYMARKET_ANALYSIS_INTERVAL,
     POLYMARKET_MIN_CONFIDENCE: process.env.POLYMARKET_MIN_CONFIDENCE,
+    // CoinGecko and edge settings
+    COINGECKO_API_KEY: process.env.COINGECKO_API_KEY,
+    POLYMARKET_MIN_EDGE: process.env.POLYMARKET_MIN_EDGE,
+    POLYMARKET_BANKROLL: process.env.POLYMARKET_BANKROLL,
+    POLYMARKET_DRY_RUN: process.env.POLYMARKET_DRY_RUN,
   },
 
   async init(config: Record<string, string>) {
@@ -148,6 +179,7 @@ export const polymarketPlugin: Plugin = {
   },
 
   // Services - TagManagerService MUST be first for category filtering to work
+  // Crypto-focused services added for technical analysis and automated trading
   services: [
     TagManagerService,
     PolymarketService,
@@ -160,6 +192,13 @@ export const polymarketPlugin: Plugin = {
     ScheduledPostsService,
     MarketIntelligenceService,
     CryptoPriceStrategyService,
+    // New crypto-focused services
+    CoinGeckoDataService,
+    TechnicalAnalysisService,
+    CryptoMarketDiscoveryService,
+    EdgeCalculatorService,
+    TradeExecutorService,
+    ZeracleOrchestratorService,  // Main orchestrator - coordinates all crypto services
   ],
 
   // Actions for trading and market interaction
@@ -205,9 +244,13 @@ export const polymarketPlugin: Plugin = {
         res.json({
           status: 'ok',
           plugin: 'polymarket',
-          version: '1.0.0',
+          version: '2.0.0',
+          focus: 'crypto-price-prediction',
           features: [
-            'market-search',
+            'crypto-market-discovery',
+            'coingecko-technical-analysis',
+            'edge-calculation',
+            'automated-trading',
             'buy-shares',
             'sell-shares',
             'portfolio-tracking',
