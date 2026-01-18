@@ -261,10 +261,15 @@ export class DataSourcesService extends Service {
     this.defiLlamaKey = this.defiLlamaKey || runtime.getSetting('DEFILLAMA_API_KEY') || '';
     this.sportMonksKey = this.sportMonksKey || runtime.getSetting('SPORTMONKS_API_KEY') || '';
 
+    // Check if user explicitly wants Pro API
+    this.useCoinGeckoPro = process.env.COINGECKO_PRO === 'true' ||
+                           runtime.getSetting('COINGECKO_PRO') === 'true';
+
     logger.info('[DataSources] Available data sources:', {
       tavily: !!this.tavilyApiKey,
       cryptoPanic: !!this.cryptoPanicKey,
       coinGecko: !!this.coinGeckoKey,
+      coinGeckoPro: this.useCoinGeckoPro,
       defiLlama: !!this.defiLlamaKey,
       sportMonks: !!this.sportMonksKey,
       twitter: !!this.twitterClientId,
@@ -544,19 +549,22 @@ export class DataSourcesService extends Service {
 
   // ============= CoinGecko Integration =============
 
+  private useCoinGeckoPro = false;
+
   private getCoinGeckoBaseUrl(): string {
-    // Pro keys start with 'CG-' and require pro-api endpoint
-    if (this.coinGeckoKey && this.coinGeckoKey.startsWith('CG-')) {
+    // Only use pro API if explicitly set via COINGECKO_PRO=true
+    if (this.useCoinGeckoPro && this.coinGeckoKey) {
       return 'https://pro-api.coingecko.com/api/v3';
     }
+    // Default to demo API (works with free tier keys)
     return 'https://api.coingecko.com/api/v3';
   }
 
   private getCoinGeckoHeaders(): Record<string, string> {
     const headers: Record<string, string> = {};
     if (this.coinGeckoKey) {
-      // Pro keys use x-cg-pro-api-key, demo keys use x-cg-demo-api-key
-      if (this.coinGeckoKey.startsWith('CG-')) {
+      // Use pro header only if using pro API
+      if (this.useCoinGeckoPro) {
         headers['x-cg-pro-api-key'] = this.coinGeckoKey;
       } else {
         headers['x-cg-demo-api-key'] = this.coinGeckoKey;
