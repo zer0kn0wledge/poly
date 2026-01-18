@@ -261,9 +261,11 @@ export class DataSourcesService extends Service {
     this.defiLlamaKey = this.defiLlamaKey || runtime.getSetting('DEFILLAMA_API_KEY') || '';
     this.sportMonksKey = this.sportMonksKey || runtime.getSetting('SPORTMONKS_API_KEY') || '';
 
-    // Check if user explicitly wants Pro API
-    this.useCoinGeckoPro = process.env.COINGECKO_PRO === 'true' ||
-                           runtime.getSetting('COINGECKO_PRO') === 'true';
+    // CoinGecko keys starting with 'CG-' are Pro keys and require pro-api endpoint
+    // Use Demo API only if explicitly set COINGECKO_PRO=false
+    const explicitlyDemo = process.env.COINGECKO_PRO === 'false' ||
+                           runtime.getSetting('COINGECKO_PRO') === 'false';
+    this.useCoinGeckoPro = this.coinGeckoKey.startsWith('CG-') && !explicitlyDemo;
 
     logger.info('[DataSources] Available data sources:', {
       tavily: !!this.tavilyApiKey,

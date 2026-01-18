@@ -151,15 +151,16 @@ export class CoinGeckoDataService extends Service {
     this.apiKey = process.env.COINGECKO_API_KEY ||
                   runtime.getSetting('COINGECKO_API_KEY') || null;
 
-    // Check if user explicitly wants Pro API (set COINGECKO_PRO=true)
-    const usePro = process.env.COINGECKO_PRO === 'true' ||
-                   runtime.getSetting('COINGECKO_PRO') === 'true';
+    // CoinGecko keys starting with 'CG-' are Pro keys and require pro-api endpoint
+    // Use Demo API only if explicitly set COINGECKO_PRO=false
+    const explicitlyDemo = process.env.COINGECKO_PRO === 'false' ||
+                           runtime.getSetting('COINGECKO_PRO') === 'false';
 
-    if (usePro && this.apiKey) {
+    if (this.apiKey && this.apiKey.startsWith('CG-') && !explicitlyDemo) {
       this.baseUrl = 'https://pro-api.coingecko.com/api/v3';
-      logger.info('[CoinGeckoData] Using Pro API endpoint');
+      logger.info('[CoinGeckoData] Using Pro API endpoint (CG- key detected)');
     } else {
-      // Default to demo API (works with free tier keys)
+      // Use demo API for non-CG keys or if explicitly requested
       this.baseUrl = 'https://api.coingecko.com/api/v3';
       logger.info('[CoinGeckoData] Using Demo API endpoint');
     }
@@ -167,7 +168,7 @@ export class CoinGeckoDataService extends Service {
     logger.info('[CoinGeckoData] Service initialized', {
       hasApiKey: !!this.apiKey,
       baseUrl: this.baseUrl,
-      isPro: usePro
+      isPro: this.baseUrl.includes('pro-api')
     });
   }
 

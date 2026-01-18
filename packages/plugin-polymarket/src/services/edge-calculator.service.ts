@@ -461,8 +461,8 @@ export class EdgeCalculatorService extends Service {
 
     reasoning += `Market prices YES at ${marketPct}%, TA model suggests ${modelPct}% probability. `;
 
-    reasoning += `Technical signals: ${ta.trendDirection} trend (${(ta.trendStrength * 100).toFixed(0)}% strength), `;
-    reasoning += `RSI ${ta.rsi.toFixed(0)} (${ta.rsiSignal}), MACD ${ta.macdSignal}. `;
+    reasoning += `Technical signals: ${ta.trendDirection || 'NEUTRAL'} trend (${((ta.trendStrength || 0) * 100).toFixed(0)}% strength), `;
+    reasoning += `RSI ${(ta.rsi || 50).toFixed(0)} (${ta.rsiSignal || 'NEUTRAL'}), MACD ${ta.macdSignal || 'NEUTRAL'}. `;
 
     if (edge > 0) {
       reasoning += `Edge: +${edgePct}% - ${side} appears underpriced.`;
@@ -507,9 +507,10 @@ export class EdgeCalculatorService extends Service {
     }
 
     // Overbought/oversold risk
-    if (ta.rsi > 80) {
+    const rsi = ta.rsi || 50;
+    if (rsi > 80) {
       risks.push('RSI overbought - potential reversal');
-    } else if (ta.rsi < 20) {
+    } else if (rsi < 20) {
       risks.push('RSI oversold - potential reversal');
     }
 
