@@ -238,8 +238,8 @@ ${filtered.map((opp, i) => formatOpportunity(opp, i + 1)).join('\n\n---\n\n')}`;
             }
           }
 
-          const totalVolume = markets.reduce((sum, m) => sum + m.volume, 0);
-          const avgLiquidity = markets.reduce((sum, m) => sum + m.liquidity, 0) / markets.length;
+          const totalVolume = markets.reduce((sum, m) => sum + (m.volume || 0), 0);
+          const avgLiquidity = markets.reduce((sum, m) => sum + (m.liquidity || 0), 0) / markets.length;
 
           responseText = `CRYPTO PRICE PREDICTION MARKETS
 ================================================================================
