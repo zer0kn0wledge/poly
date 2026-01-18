@@ -127,7 +127,8 @@ function synthesizeInsights(news: NewsItem[], signals: MarketSignal[], cryptoPri
 /**
  * Format volume for display
  */
-function formatVolume(volume: number): string {
+function formatVolume(volume: number | undefined | null): string {
+  if (!volume && volume !== 0) return '$0';
   if (volume >= 1000000) return `$${(volume / 1000000).toFixed(1)}M`;
   if (volume >= 1000) return `$${(volume / 1000).toFixed(0)}K`;
   return `$${volume.toFixed(0)}`;

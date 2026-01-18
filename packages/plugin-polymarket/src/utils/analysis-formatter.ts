@@ -379,7 +379,8 @@ function generateTweetSummary(
 /**
  * Format volume for display
  */
-function formatVolume(volume: number): string {
+function formatVolume(volume: number | undefined | null): string {
+  if (!volume && volume !== 0) return '0';
   if (volume >= 1000000) {
     return `${(volume / 1000000).toFixed(1)}M`;
   } else if (volume >= 1000) {
